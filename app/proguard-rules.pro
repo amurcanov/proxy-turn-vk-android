@@ -1,0 +1,4 @@
+-keep class com.jcraft.jsch.** { *; }
+-keep class com.mwiede.jsch.** { *; }
+-dontwarn com.jcraft.jsch.**
+-dontwarn com.mwiede.jsch.**
