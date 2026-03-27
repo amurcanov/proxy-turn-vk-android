@@ -29,15 +29,13 @@ import (
 	"github.com/pion/turn/v5"
 )
 
-
-
 const (
 	configFile         = "wg-turn.conf"
-	workersPerGroup    = 8
+	workersPerGroup    = 4
 	groupCycleMin      = 15
 	overlapDuration    = 45 * time.Second
-	workerSendBuf      = 48
-	sessionReadTimeout = 35 * time.Second
+	workerSendBuf      = 128
+	sessionReadTimeout = 60 * time.Second
 	maxVKConcurrency   = 2
 	returnChBuf        = 384
 	readBufSize        = 1600
@@ -51,11 +49,9 @@ var (
 )
 
 func init() {
-	vkAppID.Store("6287487")
-	vkAppSecret.Store("QbYic1K3lEV5kTGiqlq2")
+	vkAppID.Store("8094476")
+	vkAppSecret.Store("0sxydyHqvEaPJkMhnBEW")
 }
-
-
 
 type NullLoggerFactory struct{}
 
@@ -73,8 +69,6 @@ func (n *NullLogger) Warn(_ string)                     {}
 func (n *NullLogger) Warnf(_ string, _ ...interface{})  {}
 func (n *NullLogger) Error(_ string)                    {}
 func (n *NullLogger) Errorf(_ string, _ ...interface{}) {}
-
-
 
 type stats struct {
 	activeConnections atomic.Int32
@@ -112,11 +106,7 @@ func statsLoop(ctx context.Context) {
 	}
 }
 
-
-
 var vkSemaphore = make(chan struct{}, maxVKConcurrency)
-
-
 
 var (
 	sharedTransportOnce sync.Once
@@ -151,24 +141,22 @@ func getSharedTransport() *http.Transport {
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   10,
 			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:  10 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		}
 	})
 	return sharedTransport
 }
 
-
-
-func getUniqueVkCreds(ctx context.Context, hash string, maxRetries int) (user, pass, turnAddr string, err error) {
+func getUniqueVkCreds(ctx context.Context, hash string, maxRetries int) (user, pass string, turnAddrs []string, err error) {
 	for attempt := range maxRetries {
 		select {
 		case <-ctx.Done():
-			return "", "", "", ctx.Err()
+			return "", "", nil, ctx.Err()
 		case vkSemaphore <- struct{}{}:
 		}
 
-		user, pass, turnAddr, err = getVkCredsOnce(ctx, hash)
+		user, pass, turnAddrs, err = getVkCredsOnce(ctx, hash)
 		<-vkSemaphore
 
 		if err == nil {
@@ -179,7 +167,7 @@ func getUniqueVkCreds(ctx context.Context, hash string, maxRetries int) (user, p
 
 		errStr := err.Error()
 		if strings.Contains(errStr, "9000") || strings.Contains(errStr, "call not found") {
-			return "", "", "", fmt.Errorf("хеш мёртв: %w", err)
+			return "", "", nil, fmt.Errorf("хеш мёртв: %w", err)
 		}
 
 		var backoff time.Duration
@@ -198,14 +186,14 @@ func getUniqueVkCreds(ctx context.Context, hash string, maxRetries int) (user, p
 
 		select {
 		case <-ctx.Done():
-			return "", "", "", ctx.Err()
+			return "", "", nil, ctx.Err()
 		case <-time.After(backoff):
 		}
 	}
-	return "", "", "", fmt.Errorf("исчерпаны %d попыток: %w", maxRetries, err)
+	return "", "", nil, fmt.Errorf("исчерпаны %d попыток: %w", maxRetries, err)
 }
 
-func getVkCredsOnce(ctx context.Context, hash string) (user, pass, turnAddr string, err error) {
+func getVkCredsOnce(ctx context.Context, hash string) (user, pass string, turnAddrs []string, err error) {
 	client := &http.Client{
 		Timeout:   15 * time.Second,
 		Transport: getSharedTransport(),
@@ -260,105 +248,84 @@ func getVkCredsOnce(ctx context.Context, hash string) (user, pass, turnAddr stri
 	appSecret := vkAppSecret.Load().(string)
 	okAppKey := "CGMMEJLGDIHBABABA"
 
-	// Step 1: get anonymous token
 	r, err := doReq(fmt.Sprintf(
-		"client_secret=%s&client_id=%s&scopes=audio_anonymous%%2Cvideo_anonymous%%2Cphotos_anonymous%%2Cprofile_anonymous&isApiOauthAnonymEnabled=false&version=1&app_id=%s",
-		appSecret, appID, appID,
+		"client_id=%s&token_type=messages&client_secret=%s&version=1&app_id=%s",
+		appID, appSecret, appID,
 	), "https://login.vk.ru/?act=get_anonym_token")
 	if err != nil {
-		return "", "", "", fmt.Errorf("шаг 1: %w", err)
-	}
-	t1, err := get(r, "data", "access_token")
-	if err != nil {
-		return "", "", "", fmt.Errorf("шаг 1 парсинг: %w", err)
-	}
-
-	// Step 2: get payload
-	r, err = doReq("access_token="+t1,
-		fmt.Sprintf("https://api.vk.ru/method/calls.getAnonymousAccessTokenPayload?v=5.264&client_id=%s", appID))
-	if err != nil {
-		return "", "", "", fmt.Errorf("шаг 2: %w", err)
-	}
-	t2, err := get(r, "response", "payload")
-	if err != nil {
-		return "", "", "", fmt.Errorf("шаг 2 парсинг: %w", err)
-	}
-
-	// Step 3: get messages token
-	r, err = doReq(fmt.Sprintf(
-		"client_id=%s&token_type=messages&payload=%s&client_secret=%s&version=1&app_id=%s",
-		appID, t2, appSecret, appID,
-	), "https://login.vk.ru/?act=get_anonym_token")
-	if err != nil {
-		return "", "", "", fmt.Errorf("шаг 3: %w", err)
+		return "", "", nil, fmt.Errorf("шаг 3: %w", err)
 	}
 	t3, err := get(r, "data", "access_token")
 	if err != nil {
-		return "", "", "", fmt.Errorf("шаг 3 парсинг: %w", err)
+		return "", "", nil, fmt.Errorf("шаг 3 парсинг: %w", err)
 	}
 
-	// Step 4: get call token
 	r, err = doReq(fmt.Sprintf(
 		"vk_join_link=https://vk.com/call/join/%s&name=123&access_token=%s",
 		hash, t3,
 	), "https://api.vk.ru/method/calls.getAnonymousToken?v=5.264")
 	if err != nil {
-		return "", "", "", fmt.Errorf("шаг 4: %w", err)
+		return "", "", nil, fmt.Errorf("шаг 4: %w", err)
 	}
 	t4, err := get(r, "response", "token")
 	if err != nil {
-		return "", "", "", fmt.Errorf("шаг 4 парсинг: %w", err)
+		return "", "", nil, fmt.Errorf("шаг 4 парсинг: %w", err)
 	}
 
-	// Step 5: OK anonymous login
 	r, err = doReq(fmt.Sprintf(
 		"session_data=%%7B%%22version%%22%%3A2%%2C%%22device_id%%22%%3A%%22%s%%22%%2C%%22client_version%%22%%3A1.1%%2C%%22client_type%%22%%3A%%22SDK_JS%%22%%7D&method=auth.anonymLogin&format=JSON&application_key=%s",
 		uuid.New(), okAppKey,
 	), "https://calls.okcdn.ru/fb.do")
 	if err != nil {
-		return "", "", "", fmt.Errorf("шаг 5: %w", err)
+		return "", "", nil, fmt.Errorf("шаг 5: %w", err)
 	}
 	t5, err := get(r, "session_key")
 	if err != nil {
-		return "", "", "", fmt.Errorf("шаг 5 парсинг: %w", err)
+		return "", "", nil, fmt.Errorf("шаг 5 парсинг: %w", err)
 	}
 
-	// Step 6: join conversation
 	r, err = doReq(fmt.Sprintf(
 		"joinLink=%s&isVideo=false&protocolVersion=5&anonymToken=%s&method=vchat.joinConversationByLink&format=JSON&application_key=%s&session_key=%s",
 		hash, t4, okAppKey, t5,
 	), "https://calls.okcdn.ru/fb.do")
 	if err != nil {
-		return "", "", "", fmt.Errorf("шаг 6: %w", err)
+		return "", "", nil, fmt.Errorf("шаг 6: %w", err)
 	}
 
 	ts, ok := r["turn_server"].(map[string]interface{})
 	if !ok {
-		return "", "", "", fmt.Errorf("turn_server не найден в ответе")
+		return "", "", nil, fmt.Errorf("turn_server не найден в ответе")
 	}
 
 	user, _ = ts["username"].(string)
 	pass, _ = ts["credential"].(string)
+	lifetime, _ := ts["lifetime"].(float64)
+	if lifetime > 0 {
+		log.Printf("[ВК] Креды получены, LIFE: %.0f сек", lifetime)
+	} else {
+		log.Printf("[ВК] Креды получены, LIFE: не указано")
+	}
 	if user == "" || pass == "" {
-		return "", "", "", fmt.Errorf("пустые credentials в ответе")
+		return "", "", nil, fmt.Errorf("пустые credentials в ответе")
 	}
 
 	urls, _ := ts["urls"].([]interface{})
-	if len(urls) == 0 {
-		return "", "", "", fmt.Errorf("нет TURN urls в ответе")
+	for _, u := range urls {
+		s, ok := u.(string)
+		if !ok {
+			continue
+		}
+		clean := strings.Split(s, "?")[0]
+		addr := strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
+		if addr != "" {
+			turnAddrs = append(turnAddrs, addr)
+		}
 	}
-
-	turnURL, ok := urls[0].(string)
-	if !ok {
-		return "", "", "", fmt.Errorf("TURN URL не строка")
+	if len(turnAddrs) == 0 {
+		return "", "", nil, fmt.Errorf("нет TURN urls в ответе")
 	}
-
-	clean := strings.Split(turnURL, "?")[0]
-	turnAddr = strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
-	return user, pass, turnAddr, nil
+	return user, pass, turnAddrs, nil
 }
-
-
 
 type workerSlot struct {
 	id     int
@@ -498,8 +465,6 @@ func (d *dispatcher) writeLoop() {
 	}
 }
 
-
-
 type connectedUDPConn struct{ *net.UDPConn }
 
 func (c *connectedUDPConn) WriteTo(p []byte, _ net.Addr) (int, error) { return c.Write(p) }
@@ -510,8 +475,6 @@ type turnParams struct {
 	secondaryHash string
 	sni           string
 }
-
-
 
 func requestConfig(conn net.Conn, localPort string, deviceID string, password string) (string, error) {
 	payload := fmt.Sprintf("GETCONF:%s|%s|%s", localPort, deviceID, password)
@@ -575,24 +538,25 @@ func sendReady(conn net.Conn) error {
 	return nil
 }
 
-
-
 type credentials struct {
-	User    string
-	Pass    string
-	TurnURL string
+	User     string
+	Pass     string
+	TurnURLs []string
 }
-
-
 
 func runSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr,
 	d *dispatcher, localPort string, useUDP bool, getConfig bool,
 	configChan chan<- string, sessionID int, creds credentials,
 	deviceID string, password string) error {
 
-	urlhost, urlport, err := net.SplitHostPort(creds.TurnURL)
+	if len(creds.TurnURLs) == 0 {
+		return fmt.Errorf("нет TURN URL в учетных данных")
+	}
+	selectedURL := creds.TurnURLs[sessionID%len(creds.TurnURLs)]
+
+	urlhost, urlport, err := net.SplitHostPort(selectedURL)
 	if err != nil {
-		return fmt.Errorf("разбор TURN URL %q: %w", creds.TurnURL, err)
+		return fmt.Errorf("разбор TURN URL %q: %w", selectedURL, err)
 	}
 	if tp.host != "" {
 		urlhost = tp.host
@@ -673,7 +637,7 @@ func runSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr,
 	sessionWg.Add(1)
 	go func() {
 		defer sessionWg.Done()
-		t := time.NewTicker(20 * time.Second)
+		t := time.NewTicker(10 * time.Second)
 		defer t.Stop()
 		for {
 			select {
@@ -747,7 +711,7 @@ func runSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr,
 	}
 	defer dtlsConn.Close()
 
-	hctx, hcancel := context.WithTimeout(sessCtx, 30*time.Second)
+	hctx, hcancel := context.WithTimeout(sessCtx, 45*time.Second)
 	err = dtlsConn.HandshakeContext(hctx)
 	hcancel()
 	if err != nil {
@@ -798,7 +762,7 @@ func runSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr,
 	go func() {
 		defer proxyWg.Done()
 		defer sessCancel()
-		ticker := time.NewTicker(15 * time.Second)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -866,8 +830,6 @@ func runSession(ctx context.Context, tp *turnParams, peer *net.UDPAddr,
 	log.Printf("[СЕССИЯ #%d] Завершена", sessionID)
 	return nil
 }
-
-
 
 func workerLoop(ctx context.Context, tp *turnParams, peer *net.UDPAddr,
 	d *dispatcher, localPort string, useUDP bool,
@@ -938,8 +900,6 @@ func workerLoop(ctx context.Context, tp *turnParams, peer *net.UDPAddr,
 	}
 }
 
-
-
 func workerGroup(ctx context.Context, groupID int, tp *turnParams,
 	peer *net.UDPAddr, d *dispatcher, localPort string, useUDP bool,
 	getConfig bool, configChan chan<- string, workerIDs []int,
@@ -961,16 +921,16 @@ func workerGroup(ctx context.Context, groupID int, tp *turnParams,
 	hash := tp.hashes[rand.IntN(len(tp.hashes))]
 	log.Printf("[ГРУППА #%d] Получаю первые креды (хеш: %s)...", groupID, hash[:min(8, len(hash))])
 
-	user, pass, turnURL, err := getCredsWithFallback(groupCtx, groupID, tp, hash)
+	user, pass, turnURLs, err := getCredsWithFallback(groupCtx, groupID, tp, hash)
 	if err != nil {
 		log.Printf("[ГРУППА #%d] Фатальная ошибка кредов: %v", groupID, err)
 		return
 	}
 
-	log.Printf("[ГРУППА #%d] Первые креды OK, TURN: %s, первый TTL=%v",
-		groupID, turnURL, firstCycleTTL)
+	log.Printf("[ГРУППА #%d] Первые креды OK, TURN: %v, первый TTL=%v",
+		groupID, turnURLs, firstCycleTTL)
 
-	creds := credentials{User: user, Pass: pass, TurnURL: turnURL}
+	creds := credentials{User: user, Pass: pass, TurnURLs: turnURLs}
 
 	startBatch := func(c credentials) context.CancelFunc {
 		bCtx, bCancel := context.WithCancel(groupCtx)
@@ -1040,7 +1000,7 @@ func workerGroup(ctx context.Context, groupID int, tp *turnParams,
 		hash = tp.hashes[rand.IntN(len(tp.hashes))]
 		log.Printf("[ГРУППА #%d] Получаю новые креды (хеш: %s)...", groupID, hash[:min(8, len(hash))])
 
-		newUser, newPass, newTurnURL, credErr := getCredsWithFallback(groupCtx, groupID, tp, hash)
+		newUser, newPass, newTurnURLs, credErr := getCredsWithFallback(groupCtx, groupID, tp, hash)
 		if credErr != nil {
 			if groupCtx.Err() != nil {
 				return
@@ -1057,8 +1017,8 @@ func workerGroup(ctx context.Context, groupID int, tp *turnParams,
 		}
 		consecutiveErrs = 0
 
-		log.Printf("[ГРУППА #%d] Создается новый батч из %d воркеров для замены", groupID, len(workerIDs))
-		newCreds := credentials{User: newUser, Pass: newPass, TurnURL: newTurnURL}
+		log.Printf("[ГРУППА #%d] Создается новый батч из %d воркеров (замена старого через 45с)", groupID, len(workerIDs))
+		newCreds := credentials{User: newUser, Pass: newPass, TurnURLs: newTurnURLs}
 		newBatchCancel := startBatch(newCreds)
 
 		oldBatchCancel := activeBatchCancel
@@ -1078,16 +1038,14 @@ func workerGroup(ctx context.Context, groupID int, tp *turnParams,
 	}
 }
 
-func getCredsWithFallback(ctx context.Context, groupID int, tp *turnParams, hash string) (user, pass, turnURL string, err error) {
-	user, pass, turnURL, err = getUniqueVkCreds(ctx, hash, 5)
+func getCredsWithFallback(ctx context.Context, groupID int, tp *turnParams, hash string) (user, pass string, turnURLs []string, err error) {
+	user, pass, turnURLs, err = getUniqueVkCreds(ctx, hash, 5)
 	if err != nil && tp.secondaryHash != "" && hash != tp.secondaryHash {
 		log.Printf("[ГРУППА #%d] Основной хеш не работает, пробую запасной", groupID)
-		user, pass, turnURL, err = getUniqueVkCreds(ctx, tp.secondaryHash, 3)
+		user, pass, turnURLs, err = getUniqueVkCreds(ctx, tp.secondaryHash, 3)
 	}
 	return
 }
-
-
 
 func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
@@ -1128,9 +1086,9 @@ func main() {
 	sni := flag.String("sni", "", "SNI для DTLS")
 	noDns := flag.Bool("nodns", false, "отключить DNS Яндекса")
 
-	appID := flag.String("vk-app-id", "6287487", "VK App ID")
-	appSecret := flag.String("vk-app-secret", "QbYic1K3lEV5kTGiqlq2", "VK App Secret")
-	
+	appID := flag.String("vk-app-id", "8094476", "VK App ID")
+	appSecret := flag.String("vk-app-secret", "0sxydyHqvEaPJkMhnBEW", "VK App Secret")
+
 	deviceID := flag.String("device-id", "unknown", "уникальный ID устройства")
 	connPassword := flag.String("password", "", "пароль подключения")
 
@@ -1174,10 +1132,7 @@ func main() {
 	}
 
 	// Лимитируем воркеров
-	maxWorkers := 128
-	if *useTCP && !*useUDP && !*useBoth {
-		maxWorkers = 64
-	}
+	maxWorkers := 48
 	if *numW > maxWorkers {
 		*numW = maxWorkers
 	}
@@ -1221,8 +1176,8 @@ func main() {
 	}
 
 	staggerStep := time.Duration(groupCycleMin) * time.Minute / time.Duration(numGroups)
-	if staggerStep < 2*time.Minute {
-		staggerStep = 2 * time.Minute
+	if staggerStep < 10*time.Second {
+		staggerStep = 10 * time.Second
 	}
 
 	// Логируем конфигурацию
@@ -1264,12 +1219,7 @@ func main() {
 			if !ok || rawConf == "" {
 				return
 			}
-			var finalConf string
-			if *splitTunnel {
-				finalConf = modifyConfigForSplitTunnel(rawConf, peer.IP)
-			} else {
-				finalConf = rawConf
-			}
+			finalConf := prepareConfig(rawConf, *splitTunnel, peer.IP)
 			fmt.Println()
 			fmt.Println("╔══════════════ WireGuard Конфиг ══════════════╗")
 			for _, line := range strings.Split(finalConf, "\n") {
@@ -1365,7 +1315,25 @@ func main() {
 	log.Println("[КЛИЕНТ] Все воркеры завершены")
 }
 
+func prepareConfig(rawConf string, split bool, peerIP net.IP) string {
+	res := rawConf
+	if !strings.Contains(res, "MTU =") {
+		lines := strings.Split(res, "\n")
+		var newLines []string
+		for _, line := range lines {
+			newLines = append(newLines, line)
+			if strings.TrimSpace(line) == "[Interface]" {
+				newLines = append(newLines, "MTU = 1280")
+			}
+		}
+		res = strings.Join(newLines, "\n")
+	}
 
+	if split {
+		res = modifyConfigForSplitTunnel(res, peerIP)
+	}
+	return res
+}
 
 func modifyConfigForSplitTunnel(conf string, peerIP net.IP) string {
 	var excludeIPs []net.IP
