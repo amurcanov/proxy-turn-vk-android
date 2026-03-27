@@ -1,8 +1,7 @@
 <div align="center">
-
-> [!CAUTION]
+  
 > ### 🔴 ВАЖНО: Исправлена ошибка рейт-лимита VK API (код 29), возвращён TCP режим TURN-транспорта как опция.
-> Стабильность работы к сожалению не гарантируется.
+> **Стабильность работы к сожалению не гарантируется.**
 
 # WDTT — WireGuard over TURN Tunnel
 <img width="192" height="192" alt="ic_launcher" src="https://github.com/user-attachments/assets/3712b08f-27be-4a7c-88f2-817a81a9a320" />
