@@ -19,7 +19,20 @@ import (
 var (
 	vkAppID     atomic.Value // string
 	vkAppSecret atomic.Value // string
+	captchaMode atomic.Value // string — "reverse_js" или "webview"
 )
+
+// CaptchaSolver — канал для получения токена капчи из внешнего решателя (WebView)
+// Формат: "token:<success_token>" или "error:<message>"
+var CaptchaResultCh = make(chan string, 1)
+
+// drainCaptchaResult удаляет устаревший результат капчи из канала (если остался)
+func drainCaptchaResult() {
+	select {
+	case <-CaptchaResultCh:
+	default:
+	}
+}
 
 func init() {
 	vkAppID.Store("6287487")
@@ -53,20 +66,30 @@ func main() {
 
 	var pauseFlag int32 // 0 = активен, 1 = пауза (Doze-mode)
 
-	// STDIN для PAUSE/RESUME/STOP (Doze-mode)
+	// STDIN для PAUSE/RESUME/STOP (Doze-mode) и CAPTCHA_RESULT (WebView mode)
 	go func() {
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
-			log.Printf("[STDIN] %s", line)
-			switch line {
-			case "PAUSE":
+			if !strings.Contains(line, "error:tunnel stopped") {
+				log.Printf("[STDIN] %s", line)
+			}
+			switch {
+			case line == "PAUSE":
 				atomic.StoreInt32(&pauseFlag, 1)
-			case "RESUME":
+			case line == "RESUME":
 				atomic.StoreInt32(&pauseFlag, 0)
-			case "STOP":
+			case line == "STOP":
 				cancel()
 				return
+			case strings.HasPrefix(line, "CAPTCHA_RESULT|"):
+				// Формат: CAPTCHA_RESULT|token или CAPTCHA_RESULT|error:msg
+				result := strings.TrimPrefix(line, "CAPTCHA_RESULT|")
+				// Дренируем старый результат, если он не был прочитан
+				drainCaptchaResult()
+				// Гарантированная запись нового результата
+				CaptchaResultCh <- result
+				log.Printf("[КАПЧА] Результат от Kotlin записан в канал")
 			}
 		}
 	}()
@@ -90,11 +113,14 @@ func main() {
 	deviceID := flag.String("device-id", "unknown", "уникальный ID устройства")
 	userAgent := flag.String("user-agent", "", "User-Agent строка устройства")
 	connPassword := flag.String("password", "", "пароль подключения")
+	captchaModeFlag := flag.String("captcha-mode", "rjs", "режим капчи: rjs или wv")
 
 	flag.Parse()
 
 	vkAppID.Store(*appID)
 	vkAppSecret.Store(*appSecret)
+	captchaMode.Store(*captchaModeFlag)
+	SetCaptchaModeEnv(*captchaModeFlag)
 	noDnsFlag.Store(*noDns)
 	SetUserAgent(*userAgent)
 
@@ -166,6 +192,7 @@ func main() {
 	}
 	log.Printf("[КЛИЕНТ] Протокол: %s", proto)
 	log.Printf("[КЛИЕНТ] Device ID: %s", *deviceID)
+	log.Printf("[КЛИЕНТ] Обход капчи: %s", captchaMode.Load().(string))
 	log.Println("[КЛИЕНТ] ═══════════════════════════════════════")
 
 	stats := NewStats()

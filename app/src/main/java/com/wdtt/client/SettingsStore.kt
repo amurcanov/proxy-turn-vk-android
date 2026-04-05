@@ -43,6 +43,12 @@ class SettingsStore(context: Context) {
         private val PROXY_MODE = stringPreferencesKey("proxy_mode") // "tun" or "socks5"
         private val PROXY_HOST = stringPreferencesKey("proxy_host")
         private val PROXY_PORT = intPreferencesKey("proxy_port")
+
+        // ═══ Captcha Solve Mode ═══
+        private val CAPTCHA_MODE = stringPreferencesKey("captcha_mode") // "webview" or "reverse_js"
+        
+        // ═══ VPN Exclusions Mode ═══
+        private val IS_WHITELIST = booleanPreferencesKey("is_whitelist")
     }
 
     private val dataStore = appContext.dataStore
@@ -75,6 +81,12 @@ class SettingsStore(context: Context) {
     val proxyMode: Flow<String> = dataStore.data.map { it[PROXY_MODE] ?: "tun" }
     val proxyHost: Flow<String> = dataStore.data.map { it[PROXY_HOST] ?: "127.0.0.1" }
     val proxyPort: Flow<Int> = dataStore.data.map { it[PROXY_PORT] ?: 1080 }
+
+    // ═══ Captcha Solve Mode ═══
+    val captchaMode: Flow<String> = dataStore.data.map { it[CAPTCHA_MODE] ?: "rjs" }
+
+    // ═══ VPN Exclusions Mode ═══
+    val isWhitelist: Flow<Boolean> = dataStore.data.map { it[IS_WHITELIST] ?: false }
 
     suspend fun save(
         peer: String,
@@ -148,6 +160,28 @@ class SettingsStore(context: Context) {
             prefs[PROXY_MODE] = mode
             prefs[PROXY_HOST] = host
             prefs[PROXY_PORT] = port
+        }
+    }
+
+    // ═══ Сохранение режима обхода капчи ═══
+    suspend fun saveCaptchaMode(mode: String) {
+        dataStore.edit { prefs ->
+            prefs[CAPTCHA_MODE] = mode
+        }
+    }
+
+    // ═══ Сохранение режима списка (ЧС/БС) ═══
+    suspend fun saveIsWhitelist(enabled: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[IS_WHITELIST] = enabled
+        }
+    }
+
+    // Атомарное сохранение обоих параметров для исключения гонки при перезагрузке
+    suspend fun saveExceptionsMode(packages: String, isWhitelist: Boolean) {
+        dataStore.edit { prefs ->
+            prefs[EXCLUDED_APPS] = packages
+            prefs[IS_WHITELIST] = isWhitelist
         }
     }
 }

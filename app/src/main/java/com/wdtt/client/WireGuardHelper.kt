@@ -42,19 +42,19 @@ class WireGuardHelper(context: Context) {
             }
             builder.parsePrivateKey(parsedConfig.`interface`.keyPair.privateKey.toBase64())
 
-            // Exclude our app and VK apps (Defaults)
-            val excludedApps = mutableSetOf(appContext.packageName, "com.vkontakte.android", "com.vk.calls")
-            
-            // Add user selected exceptions
+            // 1. Пакеты, которые всегда исключаются (наше приложение, ВК)
+            // 2. Получаю настройки пользователя
             val settingsStore = SettingsStore(appContext)
             val savedExcluded = settingsStore.excludedApps.first()
-            if (savedExcluded.isNotEmpty()) {
-                savedExcluded.split(",").forEach { 
-                    excludedApps.add(it)
-                }
-            }
+            
+            val userSelected = savedExcluded.split(",").filter { it.isNotEmpty() }.toSet()
 
-            builder.excludeApplications(excludedApps)
+            // В обоих режимах (ЧС и БС) мы технически используем Blacklist (Checked = Excluded),
+            // так как пользователю удобнее логика "снимите галочку, чтобы приложение пошло в туннель".
+            // Разница только в описании и начальном состоянии списка (пустой/полный).
+            val excluded = mutableSetOf(appContext.packageName, "com.vkontakte.android", "com.vk.calls")
+            excluded.addAll(userSelected)
+            builder.excludeApplications(excluded)
 
             val newInterface = builder.build()
 

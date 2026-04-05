@@ -69,7 +69,8 @@ class TunnelService : Service() {
                     port = intent.getIntExtra("port", 9000),
                     sni = intent.getStringExtra("sni") ?: "",
                     connectionPassword = intent.getStringExtra("connection_password") ?: "",
-                    protocol = intent.getStringExtra("protocol") ?: "udp"
+                    protocol = intent.getStringExtra("protocol") ?: "udp",
+                    captchaMode = intent.getStringExtra("captcha_mode") ?: "reverse_js"
                 )
                 startTunnel(params)
             }
@@ -118,7 +119,8 @@ class TunnelService : Service() {
                     workersPerHash = store.workersPerHash.first(),
                     port = store.listenPort.first(),
                     sni = store.sni.first(),
-                    connectionPassword = store.connectionPassword.first()
+                    connectionPassword = store.connectionPassword.first(),
+                    captchaMode = store.captchaMode.first()
                 )
                 if (params.peer.isNotEmpty() && params.vkHashes.isNotEmpty()) {
                     launch(Dispatchers.Main) {
@@ -141,12 +143,21 @@ class TunnelService : Service() {
         updateNotification("Подключение...")
         acquireWakeLock()
         acquireWifiLock()
+
+        // Подготавливаем CaptchaWebViewManager (не создаёт WebView — просто сохраняет контекст)
+        // Вызываем всегда — дёшево, а WebView создаётся на лету при каждом запросе капчи
+        CaptchaWebViewManager.onTunnelStart(applicationContext)
+
         TunnelManager.start(this, params)
         startStatsUpdater()
     }
 
     private fun stopTunnel() {
         updateJob?.cancel()
+
+        // Уничтожаем текущий WebView (если капча решается) и чистим контекст
+        CaptchaWebViewManager.onTunnelStop()
+
         TunnelManager.stop()
         releaseWakeLock()
         releaseWifiLock()

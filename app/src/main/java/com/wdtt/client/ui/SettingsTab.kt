@@ -27,6 +27,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wdtt.client.SettingsStore
 import com.wdtt.client.TunnelManager
@@ -53,6 +56,18 @@ fun SettingsTab() {
     val scope = rememberCoroutineScope()
     val settingsStore = remember { SettingsStore(context) }
 
+    // Игнорируем системный масштаб шрифта ( accessibility font scale )
+    val currentDensity = LocalDensity.current
+    CompositionLocalProvider(
+        LocalDensity provides Density(currentDensity.density, fontScale = 1f)
+    ) {
+        SettingsTabContent(context, scope, settingsStore)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutines.CoroutineScope, settingsStore: SettingsStore) {
     val savedPeer by settingsStore.peer.collectAsStateWithLifecycle(initialValue = "")
     val savedVkHashes by settingsStore.vkHashes.collectAsStateWithLifecycle(initialValue = "")
     val savedWorkersPerHash by settingsStore.workersPerHash.collectAsStateWithLifecycle(initialValue = 16)
@@ -63,6 +78,9 @@ fun SettingsTab() {
     // Пароль подключения
     val savedConnectionPassword by settingsStore.connectionPassword.collectAsStateWithLifecycle(initialValue = "")
 
+    // Режим обхода капчи
+    val savedCaptchaMode by settingsStore.captchaMode.collectAsStateWithLifecycle(initialValue = "rjs")
+
     val tunnelRunning by TunnelManager.running.collectAsStateWithLifecycle()
     val activeWorkers by TunnelManager.activeWorkers.collectAsStateWithLifecycle()
 
@@ -72,7 +90,7 @@ fun SettingsTab() {
 
     LaunchedEffect(tunnelRunning) {
         if (wasRunning && !tunnelRunning) {
-            cooldownSeconds = 2
+            cooldownSeconds = 5
             while (cooldownSeconds > 0) {
                 kotlinx.coroutines.delay(1000)
                 cooldownSeconds--
@@ -88,6 +106,7 @@ fun SettingsTab() {
     var workersInput by rememberSaveable { mutableFloatStateOf(24f) }
     var useTcp by rememberSaveable { mutableStateOf(false) }
     var showHashesDialog by rememberSaveable { mutableStateOf(false) }
+    var useWVCaptcha by rememberSaveable { mutableStateOf(false) }
 
     val allHashes = listOf(vkHash1, vkHash2, vkHash3)
     val validHashes = allHashes.filter { it.isNotBlank() && it.length >= 16 }
@@ -118,8 +137,9 @@ fun SettingsTab() {
     }
     val hasInputHashErrors = hashErrors.isNotEmpty()
 
-    // Состояние модального окна секретов
+    // Состояние модальных окон
     var showSecretsDialog by rememberSaveable { mutableStateOf(false) }
+    var showImportantInfoDialog by rememberSaveable { mutableStateOf(false) }
 
     var initialized by remember { mutableStateOf(false) }
 
@@ -141,6 +161,7 @@ fun SettingsTab() {
                 portInput = savedListenPort.toString()
                 sniInput = savedSni
                 useTcp = savedProtocol == "tcp"
+                useWVCaptcha = savedCaptchaMode == "wv"
                 initialized = true
             }
         }
@@ -155,6 +176,7 @@ fun SettingsTab() {
             portInput = savedListenPort.toString()
             sniInput = savedSni
             useTcp = savedProtocol == "tcp"
+            useWVCaptcha = savedCaptchaMode == "wv"
             initialized = true
         }
     }
@@ -437,6 +459,88 @@ fun SettingsTab() {
             }
         }
 
+        // ═══ Обход капчи ВК — WV / RJS ═══
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text(
+                        "Обход капчи ВК",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        if (useWVCaptcha) "WebView — нативный браузер" else "ReverseJS — эмуляция бота",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = useWVCaptcha,
+                        onClick = {
+                            useWVCaptcha = true
+                            scope.launch { settingsStore.saveCaptchaMode("wv") }
+                        },
+                        label = {
+                            Text(
+                                "WV",
+                                fontWeight = if (useWVCaptcha) FontWeight.Bold else FontWeight.Medium,
+                                color = if (useWVCaptcha) Color.White else DarkCoffee
+                            )
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = CoffeeBrown,
+                            selectedLabelColor = Color.White,
+                            containerColor = SoftLatte,
+                            labelColor = DarkCoffee
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = useWVCaptcha,
+                            borderColor = WarmMocha.copy(alpha = 0.4f),
+                            selectedBorderColor = CoffeeBrown
+                        )
+                    )
+                    FilterChip(
+                        selected = !useWVCaptcha,
+                        onClick = {
+                            useWVCaptcha = false
+                            scope.launch { settingsStore.saveCaptchaMode("rjs") }
+                        },
+                        label = {
+                            Text(
+                                "RJS",
+                                fontWeight = if (!useWVCaptcha) FontWeight.Bold else FontWeight.Medium,
+                                color = if (!useWVCaptcha) Color.White else DarkCoffee
+                            )
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = CoffeeBrown,
+                            selectedLabelColor = Color.White,
+                            containerColor = SoftLatte,
+                            labelColor = DarkCoffee
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = !useWVCaptcha,
+                            borderColor = WarmMocha.copy(alpha = 0.4f),
+                            selectedBorderColor = CoffeeBrown
+                        )
+                    )
+                }
+            }
+        }
+
         // ═══ Кнопки: Секреты + Подключить (шрифты как в DeployTab) ═══
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -486,6 +590,7 @@ fun SettingsTab() {
                             putExtra("sni", sniInput)
                             putExtra("connection_password", savedConnectionPassword)
                             putExtra("protocol", if (useTcp) "tcp" else "udp")
+                            putExtra("captcha_mode", if (useWVCaptcha) "wv" else "rjs")
                         }
                         if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
                         else context.startService(intent)
@@ -506,6 +611,125 @@ fun SettingsTab() {
                     },
                     fontWeight = FontWeight.Bold
                 )
+            }
+        }
+        
+        // ═══ Кнопка Важной информации (Full Width) ═══
+        OutlinedButton(
+            onClick = { showImportantInfoDialog = true },
+            modifier = Modifier.fillMaxWidth().height(50.dp),
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.outlinedButtonColors(
+                containerColor = Color.Transparent,
+                contentColor = CoffeeBrown
+            ),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+            )
+        ) {
+            Icon(Icons.Default.Check, null, Modifier.size(18.dp), tint = CoffeeBrown)
+            Spacer(Modifier.width(8.dp))
+            Text("Важно — ознакомьтесь!", fontWeight = FontWeight.SemiBold, color = CoffeeBrown)
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // Модальное окно с важной информацией
+        // ═══════════════════════════════════════════════════════════════
+        if (showImportantInfoDialog) {
+            Dialog(
+                onDismissRequest = { showImportantInfoDialog = false },
+                properties = DialogProperties(usePlatformDefaultWidth = false)
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(0.95f).padding(8.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surface
+                ) {
+                    Column(modifier = Modifier.padding(20.dp).verticalScroll(rememberScrollState())) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Важная информация", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                            IconButton(onClick = { showImportantInfoDialog = false }) {
+                                Icon(Icons.Default.Close, null)
+                            }
+                        }
+                        
+                        Spacer(Modifier.height(16.dp))
+                        
+                        Text(
+                            "🌐 Капча ВК", 
+                            style = MaterialTheme.typography.titleMedium, 
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "Режим WebView рекомендуется как основной, так как показывает лучшую стабильность по сравнению с ReverseJS. ReverseJS можно использовать как запасной.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            "🛡️ Сетевое окружение", 
+                            style = MaterialTheme.typography.titleMedium, 
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "Перед использованием советуем отключать другие VPN или Прокси на устройстве. Также стоит выключить «Приватный DNS» в настройках Android.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            "⚡ Рекомендации по потокам", 
+                            style = MaterialTheme.typography.titleMedium, 
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "Выбирайте количество воркеров в зависимости от скорости вашего интернета:\n" +
+                            "• 12-24: при 8-35+ Мбит/с\n" +
+                            "• 24-48: при 35-60+ Мбит/с\n" +
+                            "• Выше 48: при 70+ Мбит/с",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "Важно: чем больше воркеров, тем меньше гарантируется стабильность.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            "📊 Факторы скорости", 
+                            style = MaterialTheme.typography.titleMedium, 
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "Если скорость ниже ожидаемой, на это влияют:\n" +
+                            "1. Производительность устройства (слабее = медленнее крипто-операции).\n" +
+                            "2. Расстояние до VPS (чем дальше от VK TURN, тем выше задержки и потери).\n" +
+                            "3. Нагрузка серверов ВК (может варьироваться в разное время).",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        
+                        Spacer(Modifier.height(20.dp))
+                        Button(
+                            onClick = { showImportantInfoDialog = false },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text("Понятно")
+                        }
+                    }
+                }
             }
         }
     }
@@ -571,7 +795,7 @@ fun HashesDialog(
                 }
 
                 Text(
-                    text = "С каждым добавленным хешем, лимит на потоки увеличивается. Но важно понимать: если у вас слабый интернет, избыточное кол-во воркеров будет не лучшим решением.",
+                    text = "С каждым добавленным хешем, лимит на потоки увеличивается. Не единичное кол-во хешей помогает лучше распределять потоки — группы, по структуре.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 4.dp)

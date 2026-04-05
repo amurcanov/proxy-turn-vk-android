@@ -43,6 +43,7 @@ object TunnelManager {
     private var currentParams: TunnelParams? = null
     private var lastContext: Context? = null
     private var forceRegenerateUA = false // принудительная перегенерация UA при ошибках
+    private var currentCaptchaMode = "rjs" // режим обхода капчи: "wv" или "rjs"
 
     val running = MutableStateFlow(false)
     val logs = MutableStateFlow<List<LogEntry>>(emptyList())
@@ -76,19 +77,22 @@ object TunnelManager {
         logs.update { currentList ->
             val current = currentList.toMutableList()
             val index = current.indexOfFirst { it.key == key }
-            
+
             if (index != -1) {
+                // Обновляем текст и счётчик НА МЕСТЕ
                 val entry = current[index]
-                current[index] = entry.copy(count = entry.count + 1, message = message)
+                current[index] = entry.copy(count = entry.count + 1, message = message, priority = priority, isError = isError)
             } else {
+                // Новая запись
                 current.add(LogEntry(key, message, 1, priority, isError))
             }
-            
-            // Сортировка: сначала по приоритету, потом ошибки в самый низ
+
+            // Сортировка: по приоритету (наименьший сверху), затем ошибки
+            // Приоритеты: Основной=1, Капча=5, Готов=10, Статы=100, Ошибки=200
             val sorted = current.sortedWith(compareBy({ it.priority }, { if (it.isError) 1 else 0 }, { it.key }))
-            
-            // Защита от утечки памяти: лимит 100 записей (самые важные сверху)
-            if (sorted.size > 100) sorted.take(100) else sorted
+
+            // Лимит 100 записей
+            if (sorted.size > 100) sorted.takeLast(100) else sorted
         }
     }
 
@@ -107,6 +111,7 @@ object TunnelManager {
             currentParams = params
             lastContext = appContext
             forceRegenerateUA = false
+            currentCaptchaMode = params.captchaMode
         }
         
         wgHelper = WireGuardHelper(appContext)
@@ -132,7 +137,7 @@ object TunnelManager {
                 val totalWorkers = params.workersPerHash.coerceIn(1, 128) // Максимум ограничивается UI (80), но тут ставим хард-лимит побольше на случай запаса
                 
                 val hashMode = if (activeHashIndex == 0) "Основной" else "Запасной"
-                updateLog("config_info", "[$hashMode] Хешей=$hashCount, Потоков=$totalWorkers", 50)
+                updateLog("config_info", "[$hashMode] Хешей=$hashCount, Потоков=$totalWorkers", 1)
 
 
                 // CRITICAL FIX: Use nativeLibraryDir with extractNativeLibs="true"
@@ -169,6 +174,10 @@ object TunnelManager {
 
                 // Protocol selection from UI
                 cmd.add(if (params.protocol == "tcp") "-tcp" else "-udp")
+
+                // Captcha mode: wv или rjs
+                cmd.add("-captcha-mode")
+                cmd.add(params.captchaMode)
 
                 val settingsStore = SettingsStore(appContext)
                 var userAgent = settingsStore.userAgent.first()
@@ -240,6 +249,25 @@ object TunnelManager {
                         return@forEachLine
                     }
 
+                    // 0b. CAPTCHA_SOLVE — запрос от Go для WV-режима
+                    if (lineTrim.startsWith("CAPTCHA_SOLVE|")) {
+                        if (currentCaptchaMode == "wv") {
+                            val parts = lineTrim.substringAfter("CAPTCHA_SOLVE|").split("|", limit = 2)
+                            if (parts.size == 2) {
+                                val redirectUri = parts[0]
+                                val sessionToken = parts[1]
+                                scope.launch {
+                                    handleCaptchaSolve(redirectUri, sessionToken)
+                                }
+                            } else {
+                                writeCaptchaResult("error:invalid CAPTCHA_SOLVE format")
+                            }
+                        } else {
+                            writeCaptchaResult("error:wv mode not enabled")
+                        }
+                        return@forEachLine
+                    }
+
                     // 1. ПРЕДОХРАНИТЕЛЬ (Circuit Breaker)
                     if (isError) {
                         when {
@@ -292,16 +320,63 @@ object TunnelManager {
 
                     // 2. Этапы подключения и Ошибки
                     when {
+                        // Статистика
+                        lineTrim.contains("[СТАТИСТИКА]") -> {
+                            val msg = lineTrim.substringAfter("[СТАТИСТИКА]").trim()
+                            stats.value = msg
+
+                            val match = Regex("Активных:\\s*(\\d+)").find(msg)
+                            if (match != null) {
+                                activeWorkers.value = match.groupValues[1].toIntOrNull() ?: 0
+                            }
+
+                            updateLog("stats", "[СТАТИСТИКА] $msg", 3, false)
+                            return@forEachLine
+                        }
+
+                        // ═══ RJS капча логи: [КАПЧА RJS] со стабильными ключами-шагами ═══
+                        lineTrim.contains("[КАПЧА] RJS:") -> {
+                            // Удаляем тайминги и лишние скобки: (123мс), (diff=2), (общее время...)
+                            var text = lineTrim.substringAfter("[КАПЧА] RJS:").trim()
+                            text = text.replace(Regex("\\s*\\([^)]+\\)\\s*"), " ").trim()
+                            
+                            val stableKey = when {
+                                text.contains("Загрузка") || text.contains("fetch") -> "captcha_rjs_1"
+                                text.contains("PoW") -> "captcha_rjs_2"
+                                text.contains("осматривает") || text.contains("человек") -> "captcha_rjs_3"
+                                text.contains("captchaNotRobot") || text.contains("Отправка") -> "captcha_rjs_4"
+                                text.contains("endSession") -> "captcha_rjs_5"
+                                text.contains("решена") -> "captcha_rjs_6"
+                                else -> "captcha_rjs_${text.take(15).hashCode()}"
+                            }
+                            updateLog(stableKey, "[КАПЧА RJS] $text", 5, false)
+                        }
+
+                        // ═══ WV капча логи от Go: [КАПЧА WV] со стабильными ключами ═══
+                        lineTrim.contains("[КАПЧА] WV:") -> {
+                            var text = lineTrim.substringAfter("[КАПЧА] WV:").trim()
+                            text = text.replace(Regex("\\s*\\([^)]+\\)\\s*"), " ").trim()
+                            
+                            val isErr = text.contains("Ошибка")
+                            val stableKey = when {
+                                text.contains("Запрос") -> "captcha_wv_step_2" // Step 2 (после создания WV)
+                                text.contains("Токен") -> "captcha_wv_step_5"  // Step 5 (перед уничтожением)
+                                isErr -> "captcha_wv_err"
+                                else -> "captcha_wv_go_other"
+                            }
+                            updateLog(stableKey, "[КАПЧА WV] $text", 5, isErr)
+                        }
+
                         lineTrim.contains("Старт") || lineTrim.contains("Ожидайте") ->
-                            updateLog("creds_start", "[ВК] Получение учетных данных...", 0, false)
+                            updateLog("creds_start", "[ВК] Получение учетных данных...", 2, false)
                         lineTrim.contains("Креды OK") || lineTrim.contains("Первые креды") ->
-                            updateLog("creds_ok", "[ВК] Учетные данные получены ✓", 0, false)
+                            updateLog("creds_ok", "[ВК] Учетные данные получены ✓", 2, false)
                         lineTrim.contains("Решаю VK Smart Captcha") ->
-                            updateLog("captcha_solving", "[КАПЧА] Автоматическое решение капчи...", 0, false)
+                            updateLog("captcha_start", "[КАПЧА] Решение капчи...", 5, false)
                         lineTrim.contains("Smart Captcha решена") ->
-                            updateLog("captcha_solved", "[КАПЧА] Капча решена успешно ✓", 0, false)
+                            updateLog("captcha_done", "[КАПЧА] Капча решена ✓", 5, false)
                         lineTrim.contains("капча не решена") || lineTrim.contains("ошибка решения капчи") ->
-                            updateLog("captcha_failed", "[КАПЧА] Ошибка решения капчи", 99, true)
+                            updateLog("captcha_failed", "[КАПЧА] Ошибка решения капчи", 5, true)
                         lineTrim.contains("Relay:") ->
                             updateLog("dtls_start", "[DTLS] Рукопожатие (Handshake)...", 1, false)
                         lineTrim.contains("DTLS ОК") ->
@@ -520,6 +595,61 @@ object TunnelManager {
         }
     }
 
+    // ==================== CAPTCHA SOLVER (WebView Mode) ====================
+
+    /**
+     * Вызывается при получении CAPTCHA_SOLVE от Go-процесса.
+     * Решает капчу через CaptchaWebViewManager (создаёт свежий WebView → решает → уничтожает).
+     * Результат ВСЕГДА отправляется обратно в Go через writeCaptchaResult.
+     */
+    private suspend fun handleCaptchaSolve(redirectUri: String, sessionToken: String) {
+        updateLog("captcha_wv_step_1", "[КАПЧА WV] Создание WebView...", 5, false)
+
+        try {
+            val token = CaptchaWebViewManager.solveCaptchaAsync(redirectUri, sessionToken) { step ->
+                if (step == "solve_start") {
+                    updateLog("captcha_wv_step_3", "[КАПЧА WV] Решение капчи...", 5, false)
+                }
+            }
+            updateLog("captcha_wv_step_4", "[КАПЧА WV] Капча решена ✓", 5, false)
+            writeCaptchaResult(token)
+        } catch (e: IllegalStateException) {
+            val errorMsg = e.message ?: "WV state error"
+            updateLog("captcha_wv_err", "[КАПЧА WV] $errorMsg", 5, true)
+            writeCaptchaResult("error:$errorMsg")
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            updateLog("captcha_wv_err", "[КАПЧА WV] Таймаут (45с)", 5, true)
+            writeCaptchaResult("error:timeout (45s)")
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            updateLog("captcha_wv_err", "[КАПЧА WV] Отменено", 5, true)
+            writeCaptchaResult("error:cancelled")
+        } catch (e: Exception) {
+            val errorMsg = e.message ?: "${e::class.simpleName}"
+            if (errorMsg != "tunnel stopped") {
+                updateLog("captcha_wv_err", "[КАПЧА WV] Ошибка — $errorMsg", 5, true)
+            }
+            writeCaptchaResult("error:$errorMsg")
+        }
+
+        // WebView уничтожен в finally блоке solveCaptchaAsync
+        updateLog("captcha_wv_step_6", "[КАПЧА WV] WebView уничтожен", 5, false)
+    }
+
+    /**
+     * Записывает результат решения капчи в stdin Go-процесса.
+     */
+    private fun writeCaptchaResult(result: String) {
+        val proc = process
+        if (proc == null || !proc.isAlive) return
+        try {
+            val line = "CAPTCHA_RESULT|$result\n"
+            proc.outputStream.write(line.toByteArray(Charsets.UTF_8))
+            proc.outputStream.flush()
+        } catch (e: Exception) {
+            updateLog("captcha_write_err", "[КАПЧА] Ошибка записи: ${e.message}", 200, true)
+        }
+    }
+
     fun clearLogs() {
         logs.value = emptyList()
         activeWorkers.value = 0
@@ -534,5 +664,6 @@ data class TunnelParams(
     val port: Int,
     val sni: String = "",
     val connectionPassword: String = "",
-    val protocol: String = "udp"
+    val protocol: String = "udp",
+    val captchaMode: String = "rjs" // "wv" или "rjs"
 )

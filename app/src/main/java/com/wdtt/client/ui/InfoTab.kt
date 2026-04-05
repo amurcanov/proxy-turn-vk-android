@@ -1,6 +1,8 @@
 package com.wdtt.client.ui
 
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -35,10 +37,56 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.regex.Pattern
 
+// Список браузеров для поиска (приоритетный порядок)
+private val BROWSER_PACKAGES = listOf(
+    "com.android.chrome",
+    "com.google.android.googlequicksearchbox",
+    "org.mozilla.firefox",
+    "com.yandex.browser",
+    "ru.yandex.searchplugin",
+    "com.yandex.browser.lite",
+    "com.opera.browser",
+    "com.opera.mini.native",
+    "com.microsoft.emmx",
+    "com.brave.browser",
+    "com.duckduckgo.mobile.android",
+    "com.sec.android.app.sbrowser",
+    "com.vivaldi.browser",
+    "com.kiwibrowser.browser",
+)
+
+private fun openUrlInBrowser(context: Context, url: String) {
+    try {
+        val pm = context.packageManager
+        val uri = Uri.parse(url)
+
+        // Сначала пробуем найти установленный браузер из списка
+        for (pkg in BROWSER_PACKAGES) {
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, uri)
+                intent.setPackage(pkg)
+                if (intent.resolveActivity(pm) != null) {
+                    context.startActivity(intent)
+                    return
+                }
+            } catch (_: Exception) {
+                // Игнорируем и пробуем следующий
+            }
+        }
+        // Фоллбэк: стандартный ACTION_VIEW без привязки к пакету
+        val intent = Intent(Intent.ACTION_VIEW, uri)
+        if (intent.resolveActivity(pm) != null) {
+            context.startActivity(intent)
+        }
+    } catch (_: Exception) {
+        // Тихо игнорируем
+    }
+}
+
 @Composable
 fun InfoTab() {
     val scope = androidx.compose.runtime.rememberCoroutineScope()
-    val currentVersion = "v1.0.3"
+    val currentVersion = "v1.0.4"
     var updateStatus by remember { mutableStateOf("Проверить обновление") }
 
     Column(
@@ -101,8 +149,11 @@ fun InfoTab() {
                                 }
                                 
                                 if (result != null) {
-                                    updateStatus = if (result == currentVersion || result == "1.0.3") {
-                                        "У вас последняя версия"
+                                    // Нормализуем: убираем "v" для сравнения
+                                    val latestClean = result.removePrefix("v").trim()
+                                    val currentClean = currentVersion.removePrefix("v").trim()
+                                    updateStatus = if (latestClean == currentClean) {
+                                        "Последняя версия ✓"
                                     } else {
                                         "Вышла $result (посетите релизы)"
                                     }
@@ -168,11 +219,13 @@ fun InfoTab() {
         }
 
         // --- Карта 3: Донат (Фиолетовая) ---
+        // URL "ссылка-удалена" — не валидный URL, поэтому кнопка просто не откроется
+        // (защита от краша через openUrlInBrowser с проверкой resolveActivity)
         InfoCard(
             title = "Замотивировать разработчика",
             buttonText = "",
             iconPainter = painterResource(id = R.drawable.ic_yoomoney),
-            url = "ссылка-удалена",
+            url = "https://yoomoney.ru/to/4100119505530465/30",
             buttonColor = Color(0xFF8B3FFD),
             textColor = Color.White,
             isHighlighted = true
@@ -202,10 +255,7 @@ private fun GitHubSection(
             )
         )
         Button(
-            onClick = {
-                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                context.startActivity(intent)
-            },
+            onClick = { openUrlInBrowser(context, url) },
             modifier = Modifier.fillMaxWidth(0.9f).height(56.dp),
             shape = RoundedCornerShape(16.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Color.Black)
@@ -265,10 +315,7 @@ private fun InfoCard(
             }
 
             Button(
-                onClick = {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-                    context.startActivity(intent)
-                },
+                onClick = { openUrlInBrowser(context, url) },
                 modifier = Modifier
                     .fillMaxWidth(0.9f)
                     .height(56.dp),

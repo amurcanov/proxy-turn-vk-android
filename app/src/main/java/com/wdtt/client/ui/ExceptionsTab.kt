@@ -25,6 +25,7 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wdtt.client.SettingsStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -32,6 +33,14 @@ import androidx.compose.runtime.Stable
 import androidx.compose.foundation.lazy.rememberLazyListState
 
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.unit.Dp
+
+// Coffee theme colors
+private val CoffeeBrown = Color(0xFF6D4C41)
+private val DarkCoffee = Color(0xFF3E2723)
+private val SoftLatte = Color(0xFFD7CCC8)
+private val WarmMocha = Color(0xFF8D6E63)
+private val CreamBeige = Color(0xFFF5F0EB)
 
 @Stable
 data class AppItem(
@@ -59,6 +68,8 @@ fun ExceptionsTab() {
     var appsList by remember { mutableStateOf<List<AppItem>>(AppCache.cachedList ?: emptyList()) }
     var isLoading by remember { mutableStateOf(AppCache.cachedList == null) }
     var searchQuery by remember { mutableStateOf("") }
+
+    val isWhitelist by settingsStore.isWhitelist.collectAsStateWithLifecycle(initialValue = false)
     
     // Load Apps
     LaunchedEffect(Unit) {
@@ -70,7 +81,12 @@ fun ExceptionsTab() {
             val installedApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
             
             installedApps.forEach { app ->
-                if (app.packageName != context.packageName && 
+                // Фильтр: только приложения с лаунчером (пользовательские)
+                // Или явно разрешенные системные (хотя у Play Market и YouTube есть лаунчер)
+                val hasLauncher = pm.getLaunchIntentForPackage(app.packageName) != null
+                
+                if (hasLauncher && 
+                    app.packageName != context.packageName && 
                     !app.packageName.contains("vkontakte") && 
                     !app.packageName.contains("vk.calls")) {
                     list.add(AppItem(
@@ -97,7 +113,7 @@ fun ExceptionsTab() {
             value = searchQuery,
             onValueChange = { searchQuery = it },
             placeholder = { Text("Поиск приложений...", fontSize = 14.sp) },
-            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp).height(52.dp),
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp).height(52.dp),
             shape = RoundedCornerShape(16.dp),
             leadingIcon = { Icon(Icons.Default.Search, null, modifier = Modifier.size(20.dp)) },
             singleLine = true,
@@ -106,6 +122,112 @@ fun ExceptionsTab() {
                 unfocusedContainerColor = MaterialTheme.colorScheme.surface
             )
         )
+
+        Spacer(modifier = Modifier.height(14.dp))
+
+        // --- Mode Toggle (ЧС/БС) ---
+        Surface(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text(
+                        "Режим исключений", 
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp
+                    )
+                    Text(
+                        if (isWhitelist) "БС: Неотмеченные приложения добавляются в туннель (снимите галочку)" 
+                        else "ЧС: Выбранные приложения исключаются из туннеля (поставьте галочку)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        lineHeight = 14.sp
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    // ЧС Chip (Blacklist)
+                    FilterChip(
+                        selected = !isWhitelist,
+                        onClick = {
+                            if (isWhitelist) {
+                                scope.launch {
+                                    val all = appsList.map { it.packageName }.toSet()
+                                    val inverted = all - selectedPackages
+                                    settingsStore.saveExceptionsMode(inverted.joinToString(","), false)
+                                    delay(300)
+                                    com.wdtt.client.TunnelManager.reloadWireGuard()
+                                }
+                            }
+                        },
+                        label = { 
+                            Text(
+                                "ЧС", 
+                                fontWeight = if (!isWhitelist) FontWeight.Bold else FontWeight.Medium,
+                                color = if (!isWhitelist) Color.White else DarkCoffee
+                            ) 
+                        },
+                        modifier = Modifier.width(64.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = CoffeeBrown,
+                            selectedLabelColor = Color.White,
+                            containerColor = SoftLatte,
+                            labelColor = DarkCoffee
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = !isWhitelist,
+                            borderColor = WarmMocha.copy(alpha = 0.4f),
+                            selectedBorderColor = CoffeeBrown
+                        )
+                    )
+                    // БС Chip (Whitelist)
+                    FilterChip(
+                        selected = isWhitelist,
+                        onClick = {
+                            if (!isWhitelist) {
+                                scope.launch {
+                                    val all = appsList.map { it.packageName }.toSet()
+                                    val inverted = all - selectedPackages
+                                    settingsStore.saveExceptionsMode(inverted.joinToString(","), true)
+                                    delay(300)
+                                    com.wdtt.client.TunnelManager.reloadWireGuard()
+                                }
+                            }
+                        },
+                        label = { 
+                            Text(
+                                "БС", 
+                                fontWeight = if (isWhitelist) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isWhitelist) Color.White else DarkCoffee
+                            ) 
+                        },
+                        modifier = Modifier.width(64.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = CoffeeBrown,
+                            selectedLabelColor = Color.White,
+                            containerColor = SoftLatte,
+                            labelColor = DarkCoffee
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = isWhitelist,
+                            borderColor = WarmMocha.copy(alpha = 0.4f),
+                            selectedBorderColor = CoffeeBrown
+                        )
+                    )
+                }
+            }
+        }
 
         // --- List ---
         if (isLoading) {
