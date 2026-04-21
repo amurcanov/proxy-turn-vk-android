@@ -1121,12 +1121,12 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 		for {
 			wgConn.SetReadDeadline(time.Now().Add(90 * time.Second))
 			nn, err := wgConn.Read(*b)
-			if err != nil {
-				if ne, ok := err.(net.Error); ok && ne.Timeout() {
-					// Игнорируем таймауты wgConn. Это нормально, если нет трафика (idle)
-					continue
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				// Check if context has been cancelled
+				if pctx.Err() != nil {
+					return // Exit routine if context is done
 				}
-				return
+				continue // Ignore idle timeout and continue if context is active
 			}
 			atomic.AddInt64(&totalBytesToClient, int64(nn))
 			// Per-password download tracking
