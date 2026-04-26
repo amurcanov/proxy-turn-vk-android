@@ -51,7 +51,10 @@ func WorkerGroup(
 	}
 
 	cycleNumber := 0
-	configSent := !getConfig
+	var configSent int32
+	if !getConfig {
+		configSent = 1
+	}
 
 	// Предыдущий батч
 	var prevCancel context.CancelFunc
@@ -136,10 +139,7 @@ func WorkerGroup(
 
 		// Создаём новый batch
 		batchCtx, batchCancel := context.WithCancel(ctx)
-		var configNeeded int32
-		if !configSent {
-			configNeeded = 1
-		}
+		var configRequestInFlight int32
 
 		refreshCh := make(chan struct{}, 1)
 		doneChs := make([]chan struct{}, len(workerIDs))
@@ -175,7 +175,7 @@ func WorkerGroup(
 					}
 				}
 
-				shouldGetConfig := atomic.CompareAndSwapInt32(&configNeeded, 1, 0)
+				shouldGetConfig := getConfig
 
 				// Retry loop: воркер переподключается при ошибке
 				attempt := 0
@@ -184,14 +184,25 @@ func WorkerGroup(
 						return
 					}
 
-					getConf := shouldGetConfig && attempt == 0
+					getConf := false
+					if shouldGetConfig && attempt == 0 && atomic.LoadInt32(&configSent) == 0 {
+						getConf = atomic.CompareAndSwapInt32(&configRequestInFlight, 0, 1)
+					}
 					var cc chan<- string
-					if getConf && !configSent {
+					if getConf {
 						cc = configCh
 					}
 
-					sessErr := RunSession(batchCtx, tp, peer, d, localPort, useUDP,
+					configDelivered, sessErr := RunSession(batchCtx, tp, peer, d, localPort, useUDP,
 						getConf, cc, wid, creds, deviceID, password, stats)
+
+					if getConf {
+						if configDelivered {
+							atomic.StoreInt32(&configSent, 1)
+						} else {
+							atomic.StoreInt32(&configRequestInFlight, 0)
+						}
+					}
 
 					if sessErr != nil {
 						if batchCtx.Err() != nil {
@@ -242,7 +253,7 @@ func WorkerGroup(
 							strings.Contains(errStrLower, "allocation mismatch") ||
 							strings.Contains(errStrLower, "error 508") ||
 							strings.Contains(errStrLower, "cannot create socket")
-						
+
 						isStreamClosed := strings.Contains(errStrLower, "stream closed")
 
 						if isStreamClosed {
@@ -282,10 +293,6 @@ func WorkerGroup(
 			}(wid, workerDelay, doneCh)
 		}
 
-		if !configSent && atomic.LoadInt32(&configNeeded) == 0 {
-			configSent = true
-		}
-
 		// Сохраняем батч для бесшовной ротации
 		prevCancel = batchCancel
 		prevDoneChs = doneChs
@@ -301,9 +308,6 @@ func WorkerGroup(
 		}
 
 		cycleNumber++
-		if !configSent && atomic.LoadInt32(&configNeeded) == 0 {
-			configSent = true
-		}
 	}
 }
 

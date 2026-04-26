@@ -61,15 +61,17 @@ func RunSession(
 	creds *Credentials,
 	deviceID, password string,
 	stats *Stats,
-) error {
+) (bool, error) {
+	configDelivered := false
+
 	if len(creds.TurnURLs) == 0 {
-		return fmt.Errorf("нет TURN URL в учетных данных")
+		return false, fmt.Errorf("нет TURN URL в учетных данных")
 	}
 	selectedURL := creds.TurnURLs[sessionID%len(creds.TurnURLs)]
 
 	urlhost, urlport, err := net.SplitHostPort(selectedURL)
 	if err != nil {
-		return fmt.Errorf("разбор TURN URL %q: %w", selectedURL, err)
+		return false, fmt.Errorf("разбор TURN URL %q: %w", selectedURL, err)
 	}
 	if tp.Host != "" {
 		urlhost = tp.Host
@@ -87,11 +89,11 @@ func RunSession(
 		proto = "UDP"
 		resolved, err := net.ResolveUDPAddr("udp", turnAddr)
 		if err != nil {
-			return fmt.Errorf("резолв TURN: %w", err)
+			return false, fmt.Errorf("резолв TURN: %w", err)
 		}
 		c, err := net.DialUDP("udp", nil, resolved)
 		if err != nil {
-			return fmt.Errorf("подключение TURN UDP: %w", err)
+			return false, fmt.Errorf("подключение TURN UDP: %w", err)
 		}
 		defer c.Close()
 		_ = c.SetReadBuffer(socketBufSize)
@@ -100,7 +102,7 @@ func RunSession(
 	} else {
 		c, err := net.DialTimeout("tcp", turnAddr, 10*time.Second)
 		if err != nil {
-			return fmt.Errorf("подключение TURN TCP: %w", err)
+			return false, fmt.Errorf("подключение TURN TCP: %w", err)
 		}
 		defer c.Close()
 		if tc, ok := c.(*net.TCPConn); ok {
@@ -122,21 +124,21 @@ func RunSession(
 		LoggerFactory:  &NullLoggerFactory{},
 	})
 	if err != nil {
-		return fmt.Errorf("TURN клиент: %w", err)
+		return false, fmt.Errorf("TURN клиент: %w", err)
 	}
 	defer tc.Close()
 
 	if err = tc.Listen(); err != nil {
-		return fmt.Errorf("TURN Listen: %w", err)
+		return false, fmt.Errorf("TURN Listen: %w", err)
 	}
 
 	relay, err := tc.Allocate()
 	if err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "Quota") || strings.Contains(errStr, "486") {
-			return fmt.Errorf("TURN квота: %w", err)
+			return false, fmt.Errorf("TURN квота: %w", err)
 		}
-		return fmt.Errorf("TURN Allocate: %w", err)
+		return false, fmt.Errorf("TURN Allocate: %w", err)
 	}
 	defer relay.Close()
 	log.Printf("[СЕССИЯ #%d] Relay: %s", sessionID, relay.LocalAddr())
@@ -209,7 +211,7 @@ func RunSession(
 	// DTLS с поддержкой Connection ID
 	cert, err := selfsign.GenerateSelfSigned()
 	if err != nil {
-		return fmt.Errorf("генерация сертификата: %w", err)
+		return false, fmt.Errorf("генерация сертификата: %w", err)
 	}
 
 	sni := tp.Sni
@@ -228,7 +230,7 @@ func RunSession(
 
 	dtlsConn, err := dtls.Client(pipeB, peer, dtlsCfg)
 	if err != nil {
-		return fmt.Errorf("DTLS клиент: %w", err)
+		return false, fmt.Errorf("DTLS клиент: %w", err)
 	}
 	defer dtlsConn.Close()
 
@@ -237,7 +239,7 @@ func RunSession(
 	err = dtlsConn.HandshakeContext(hctx)
 	hcancel()
 	if err != nil {
-		return fmt.Errorf("DTLS хендшейк: %w", err)
+		return false, fmt.Errorf("DTLS хендшейк: %w", err)
 	}
 	log.Printf("[ВОРКЕР #%d] [DTLS] Соединение установлено ✓", sessionID)
 
@@ -250,15 +252,20 @@ func RunSession(
 		if confErr != nil {
 			errStr := confErr.Error()
 			if strings.Contains(errStr, "FATAL_AUTH") {
-				return confErr
+				return false, confErr
 			}
 			log.Printf("[ВОРКЕР #%d] Ошибка конфига: %v", sessionID, confErr)
 		} else if conf != "" {
 			select {
 			case configCh <- conf:
+				configDelivered = true
 				log.Printf("[ВОРКЕР #%d] Конфиг получен", sessionID)
 			default:
+				configDelivered = true
+				log.Printf("[ВОРКЕР #%d] Конфиг уже был доставлен другим воркером", sessionID)
 			}
+		} else {
+			log.Printf("[ВОРКЕР #%d] Сервер ещё не выдал WireGuard-конфиг, повторим позже", sessionID)
 		}
 	}
 
@@ -364,5 +371,5 @@ func RunSession(
 	_ = pipeA.Close()
 	_ = pipeB.Close()
 	log.Printf("[СЕССИЯ #%d] Завершена", sessionID)
-	return nil
+	return configDelivered, nil
 }

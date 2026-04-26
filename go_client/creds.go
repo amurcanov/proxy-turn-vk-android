@@ -244,23 +244,26 @@ func truncateStr(s string, maxLen int) string {
 }
 
 func solveVkCaptchaViaRJS(ctx context.Context, captchaErr *vkCaptchaError, profile BotProfile) (string, error) {
+	captchaProfile := profile
+	captchaProfile.UserAgent = normalizeCaptchaUserAgent(profile.UserAgent)
+
 	// Create a tls-client instance to match the slider POC requirements
 	tlsClient, err := tlsclient.NewHttpClient(tlsclient.NewNoopLogger(),
 		tlsclient.WithTimeoutSeconds(20),
-		tlsclient.WithClientProfile(profiles.Chrome_120),
+		tlsclient.WithClientProfile(selectCaptchaTLSProfile(captchaProfile.UserAgent)),
 	)
 	if err != nil {
 		return "", fmt.Errorf("не удалось создать tls-client: %w", err)
 	}
 
-	bootstrap, err := fetchPowInput(ctx, captchaErr.RedirectUri, tlsClient, profile.UserAgent)
+	bootstrap, err := fetchPowInput(ctx, captchaErr.RedirectUri, tlsClient, captchaProfile)
 	if err != nil {
 		return "", fmt.Errorf("не удалось загрузить captcha settings: %w", err)
 	}
 
 	captchaRng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	log.Printf("[КАПЧА RJS] Старт автоматического решения...")
-	
+
 	timing := GenerateCaptchaTiming(captchaRng)
 
 	log.Printf("[КАПЧА RJS] Имитация ожидания человека (пауза %d мс)...", timing.ReadCaptchaMs)
@@ -270,18 +273,69 @@ func solveVkCaptchaViaRJS(ctx context.Context, captchaErr *vkCaptchaError, profi
 	hash := solvePoW(bootstrap.PowInput, bootstrap.Difficulty)
 	time.Sleep(time.Duration(timing.FetchPowMs) * time.Millisecond)
 
-	// Используем эвристику pixelDiff (5/5 точность)
-	successToken, err := callCaptchaNotRobotWithSliderPOC(ctx, captchaErr.SessionToken, hash, 5, tlsClient, profile, bootstrap.Settings)
-	
+	if bootstrap.Settings != nil {
+		log.Printf(
+			"[КАПЧА RJS] Тип капчи: %s | доступно: %s",
+			emptyAsUnknown(bootstrap.Settings.ShowCaptchaType),
+			emptyAsUnknown(describeCaptchaTypes(bootstrap.Settings.SettingsByType)),
+		)
+	}
+
+	var successToken string
+	if captchaSettingsPreferSlider(bootstrap.Settings) {
+		log.Printf("[КАПЧА RJS] Выбран solver: slider")
+		successToken, err = callCaptchaNotRobotWithSliderPOC(ctx, captchaErr.SessionToken, hash, 5, tlsClient, captchaProfile, bootstrap.Settings)
+	} else {
+		log.Printf("[КАПЧА RJS] Выбран solver: checkbox")
+		successToken, err = callCaptchaNotRobot(ctx, captchaErr.SessionToken, hash, profile, captchaRng)
+		if err != nil {
+			log.Printf("[КАПЧА RJS] Checkbox solver не завершил сессию: %v", err)
+			log.Printf("[КАПЧА RJS] Повтор через универсальный slider-POC (поддержка сценария checkbox -> slider)...")
+			successToken, err = callCaptchaNotRobotWithSliderPOC(ctx, captchaErr.SessionToken, hash, 5, tlsClient, captchaProfile, bootstrap.Settings)
+		}
+	}
+
 	if err == nil && successToken != "" {
-		log.Printf("[КАПЧА RJS] Слайдер решен успешно ✓")
+		log.Printf("[КАПЧА RJS] Капча решена автоматически ✓")
 		return successToken, nil
 	}
 
 	return "", err
 }
 
-func fetchPowInput(ctx context.Context, redirectUri string, client tlsclient.HttpClient, userAgent string) (*captchaBootstrap, error) {
+func selectCaptchaTLSProfile(userAgent string) profiles.ClientProfile {
+	lowerUA := strings.ToLower(userAgent)
+	return whenCaptchaTLSProfile(lowerUA)
+}
+
+func whenCaptchaTLSProfile(lowerUA string) profiles.ClientProfile {
+	return func() profiles.ClientProfile {
+		if strings.Contains(lowerUA, "android") || strings.Contains(lowerUA, "mobile") {
+			return profiles.Okhttp4Android13
+		}
+		return profiles.Chrome_120
+	}()
+}
+
+func captchaSettingsPreferSlider(settings *captchaSettingsResponse) bool {
+	if settings == nil {
+		return false
+	}
+	if settings.ShowCaptchaType == sliderCaptchaType {
+		return true
+	}
+	_, hasSlider := settings.SettingsByType[sliderCaptchaType]
+	return hasSlider
+}
+
+func emptyAsUnknown(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown"
+	}
+	return value
+}
+
+func fetchPowInput(ctx context.Context, redirectUri string, client tlsclient.HttpClient, profile BotProfile) (*captchaBootstrap, error) {
 	req, err := fhttp.NewRequestWithContext(ctx, "GET", redirectUri, nil)
 	if err != nil {
 		return nil, err
@@ -291,11 +345,7 @@ func fetchPowInput(ctx context.Context, redirectUri string, client tlsclient.Htt
 		req.Host = parsedURL.Hostname()
 	}
 
-	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Sec-Fetch-Site", "none")
-	req.Header.Set("Sec-Fetch-Mode", "navigate")
-	req.Header.Set("Sec-Fetch-Dest", "document")
+	applyCaptchaDocumentHeaders(req.Header, profile.UserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {

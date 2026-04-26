@@ -11,6 +11,7 @@ import (
 	_ "image/jpeg"
 	"io"
 	"log"
+	"math/rand"
 	neturl "net/url"
 	"regexp"
 	"sort"
@@ -36,6 +37,8 @@ type captchaNotRobotSession struct {
 	client       tlsclient.HttpClient
 	profile      BotProfile
 	browserFp    string
+	captchaRng   *rand.Rand
+	timing       CaptchaSessionTiming
 }
 
 type captchaSettingsResponse struct {
@@ -76,6 +79,7 @@ func newCaptchaNotRobotSession(
 	client tlsclient.HttpClient,
 	profile BotProfile,
 ) *captchaNotRobotSession {
+	captchaRng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	return &captchaNotRobotSession{
 		ctx:          ctx,
 		sessionToken: sessionToken,
@@ -84,6 +88,8 @@ func newCaptchaNotRobotSession(
 		client:       client,
 		profile:      profile,
 		browserFp:    profile.BrowserFP,
+		captchaRng:   captchaRng,
+		timing:       GenerateCaptchaTiming(captchaRng),
 	}
 }
 
@@ -104,9 +110,7 @@ func (s *captchaNotRobotSession) request(method string, values neturl.Values) (m
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", s.profile.UserAgent)
-	req.Header.Set("Origin", "https://id.vk.ru")
-	req.Header.Set("Referer", "https://id.vk.ru/")
+	applyCaptchaApiHeaders(req.Header, s.profile.UserAgent)
 
 	httpResp, err := s.client.Do(req)
 	if err != nil {
@@ -119,6 +123,9 @@ func (s *captchaNotRobotSession) request(method string, values neturl.Values) (m
 	body, err := io.ReadAll(httpResp.Body)
 	if err != nil {
 		return nil, err
+	}
+	if httpResp.StatusCode >= 400 {
+		log.Printf("[КАПЧА] RJS: HTTP %d на %s, body=%s", httpResp.StatusCode, method, truncateCaptchaLog(string(body), 800))
 	}
 
 	var resp map[string]interface{}
@@ -157,7 +164,8 @@ func (s *captchaNotRobotSession) requestComponentDone() error {
 }
 
 func (s *captchaNotRobotSession) requestCheckboxCheck() (*captchaCheckResult, error) {
-	return s.requestCheck("[]", base64.StdEncoding.EncodeToString([]byte("{}")))
+	cursor := nonEmptyCaptchaValue(s.profile.CursorJSON, GenerateCaptchaCursor(s.captchaRng))
+	return s.requestCheck(cursor, base64.StdEncoding.EncodeToString([]byte("{}")))
 }
 
 func (s *captchaNotRobotSession) requestSliderContent(sliderSettings string) (*sliderCaptchaContent, error) {
@@ -169,6 +177,9 @@ func (s *captchaNotRobotSession) requestSliderContent(sliderSettings string) (*s
 	resp, err := s.request("captchaNotRobot.getContent", values)
 	if err != nil {
 		return nil, fmt.Errorf("getContent failed: %w", err)
+	}
+	if status := extractCaptchaResponseStatus(resp); status != "" && status != "OK" {
+		log.Printf("[КАПЧА] RJS: getContent raw response (status=%s): %s", status, summarizeCaptchaResponse(resp))
 	}
 	return parseSliderCaptchaContentResponse(resp)
 }
@@ -184,23 +195,34 @@ func (s *captchaNotRobotSession) requestSliderCheck(activeSteps []int, candidate
 
 func (s *captchaNotRobotSession) requestCheck(cursor string, answer string) (*captchaCheckResult, error) {
 	values := s.baseValues()
-	values.Set("accelerometer", "[]")
-	values.Set("gyroscope", "[]")
-	values.Set("motion", "[]")
+	values.Set("accelerometer", nonEmptyCaptchaValue(s.profile.Accelerometer, GenerateCaptchaAccelerometer()))
+	values.Set("gyroscope", nonEmptyCaptchaValue(s.profile.Gyroscope, GenerateCaptchaGyroscope()))
+	values.Set("motion", nonEmptyCaptchaValue(s.profile.Motion, GenerateCaptchaMotion()))
 	values.Set("cursor", cursor)
-	values.Set("taps", "[]")
-	values.Set("connectionRtt", "[]")
-	values.Set("connectionDownlink", "[]")
+	values.Set("taps", nonEmptyCaptchaValue(s.profile.Taps, GenerateCaptchaTaps()))
+	values.Set("connectionRtt", GenerateCaptchaConnectionRtt(s.captchaRng))
+	values.Set("connectionDownlink", nonEmptyCaptchaValue(s.profile.Downlink, GenerateCaptchaDownlink(s.captchaRng)))
 	values.Set("browser_fp", s.browserFp)
 	values.Set("hash", s.hash)
 	values.Set("answer", answer)
-	values.Set("debug_info", captchaDebugInfo)
+	debugInfo := s.profile.DebugInfo
+	if debugInfo == "" {
+		debugInfo = captchaDebugInfo
+	}
+	values.Set("debug_info", debugInfo)
 
 	resp, err := s.request("captchaNotRobot.check", values)
 	if err != nil {
 		return nil, fmt.Errorf("check failed: %w", err)
 	}
-	return parseCaptchaCheckResult(resp)
+	result, err := parseCaptchaCheckResult(resp)
+	if err != nil {
+		return nil, err
+	}
+	if result.Status == "BOT" || result.Status == "ERROR" || result.Status == "ERROR_LIMIT" {
+		log.Printf("[КАПЧА] RJS: check raw response (status=%s): %s", result.Status, summarizeCaptchaResponse(resp))
+	}
+	return result, nil
 }
 
 func (s *captchaNotRobotSession) requestEndSession() {
@@ -228,13 +250,16 @@ func callCaptchaNotRobotWithSliderPOC(
 	}
 	settingsResp = mergeCaptchaSettings(settingsResp, initialSettings)
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(time.Duration(session.timing.SettingsToComponentMs) * time.Millisecond)
 
 	if err := session.requestComponentDone(); err != nil {
 		return "", err
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(time.Duration(session.timing.ComponentToCheckMs) * time.Millisecond)
+	if session.timing.ExtraPauseMs > 0 {
+		time.Sleep(time.Duration(session.timing.ExtraPauseMs) * time.Millisecond)
+	}
 
 	initialCheck, err := session.requestCheckboxCheck()
 	if err != nil {
@@ -244,21 +269,25 @@ func callCaptchaNotRobotWithSliderPOC(
 		if initialCheck.SuccessToken == "" {
 			return "", fmt.Errorf("success_token not found")
 		}
+		time.Sleep(time.Duration(session.timing.CheckToEndMs) * time.Millisecond)
 		session.requestEndSession()
+		time.Sleep(time.Duration(session.timing.EndSessionMs) * time.Millisecond)
 		return initialCheck.SuccessToken, nil
 	}
 
 	sliderSettings, hasSlider := settingsResp.SettingsByType[sliderCaptchaType]
-	if initialCheck.Status != "OK" {
-		// No log needed
-	}
-
 	if !hasSlider {
-		// skip
-	} else {
-		log.Printf("[КАПЧА RJS] Запрос фрагментов пазла (Slider Content)...")
+		availableTypes := describeCaptchaTypes(settingsResp.SettingsByType)
+		if settingsResp.ShowCaptchaType != sliderCaptchaType {
+			if availableTypes == "" {
+				availableTypes = "unknown"
+			}
+			return "", fmt.Errorf("check status: %s (slider settings not found, captcha types: %s)", initialCheck.Status, availableTypes)
+		}
+		log.Printf("[КАПЧА RJS] Слайдер заявлен без settings, пробую getContent без captcha_settings...")
 	}
 
+	log.Printf("[КАПЧА RJS] Checkbox требует слайдер, запрашиваю фрагменты пазла...")
 	sliderContent, err := session.requestSliderContent(sliderSettings)
 	if err != nil {
 		return "", fmt.Errorf("check status: %s (slider getContent failed: %w)", initialCheck.Status, err)
@@ -279,15 +308,130 @@ func callCaptchaNotRobotWithSliderPOC(
 		return "", err
 	}
 
+	time.Sleep(time.Duration(session.timing.CheckToEndMs) * time.Millisecond)
 	session.requestEndSession()
+	time.Sleep(time.Duration(session.timing.EndSessionMs) * time.Millisecond)
 	return successToken, nil
 }
 
+func nonEmptyCaptchaValue(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
 func buildCaptchaDeviceJSON(profile BotProfile) string {
+	if strings.TrimSpace(profile.DeviceJSON) != "" {
+		return profile.DeviceJSON
+	}
 	return fmt.Sprintf(
 		`{"screenWidth":1920,"screenHeight":1080,"screenAvailWidth":1920,"screenAvailHeight":1040,"innerWidth":1920,"innerHeight":969,"devicePixelRatio":1,"language":"en-US","languages":["en-US"],"webdriver":false,"hardwareConcurrency":8,"deviceMemory":8,"connectionEffectiveType":"4g","notificationsPermission":"default","userAgent":"%s","platform":"Win32"}`,
 		profile.UserAgent,
 	)
+}
+
+func normalizeCaptchaUserAgent(userAgent string) string {
+	trimmed := strings.TrimSpace(userAgent)
+	if trimmed == "" {
+		return "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+	}
+
+	chromeVersionRe := regexp.MustCompile(`Chrome/\d+(\.\d+)*`)
+	if chromeVersionRe.MatchString(trimmed) {
+		return chromeVersionRe.ReplaceAllString(trimmed, "Chrome/120.0.0.0")
+	}
+	return trimmed
+}
+
+func applyCaptchaApiHeaders(headers interface{ Set(string, string) }, userAgent string) {
+	secChUa, secChPlatform, secChMobile := buildCaptchaClientHints(userAgent)
+	headers.Set("User-Agent", userAgent)
+	headers.Set("Accept", "*/*")
+	headers.Set("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
+	headers.Set("Origin", "https://id.vk.ru")
+	headers.Set("Referer", "https://id.vk.ru/")
+	headers.Set("sec-ch-ua-platform", fmt.Sprintf(`"%s"`, secChPlatform))
+	headers.Set("sec-ch-ua", secChUa)
+	headers.Set("sec-ch-ua-mobile", secChMobile)
+	headers.Set("Sec-Fetch-Site", "same-site")
+	headers.Set("Sec-Fetch-Mode", "cors")
+	headers.Set("Sec-Fetch-Dest", "empty")
+	headers.Set("DNT", "1")
+	headers.Set("Priority", "u=1, i")
+	headers.Set("Cache-Control", "no-cache")
+	headers.Set("Pragma", "no-cache")
+}
+
+func applyCaptchaDocumentHeaders(headers interface{ Set(string, string) }, userAgent string) {
+	secChUa, secChPlatform, secChMobile := buildCaptchaClientHints(userAgent)
+	headers.Set("User-Agent", userAgent)
+	headers.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	headers.Set("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
+	headers.Set("sec-ch-ua-platform", fmt.Sprintf(`"%s"`, secChPlatform))
+	headers.Set("sec-ch-ua", secChUa)
+	headers.Set("sec-ch-ua-mobile", secChMobile)
+	headers.Set("Sec-Fetch-Site", "none")
+	headers.Set("Sec-Fetch-Mode", "navigate")
+	headers.Set("Sec-Fetch-Dest", "document")
+	headers.Set("DNT", "1")
+	headers.Set("Cache-Control", "no-cache")
+	headers.Set("Pragma", "no-cache")
+}
+
+func buildCaptchaClientHints(userAgent string) (secChUa string, platform string, mobile string) {
+	ua := normalizeCaptchaUserAgent(userAgent)
+	major := "120"
+	if match := regexp.MustCompile(`Chrome/(\d+)`).FindStringSubmatch(ua); len(match) >= 2 {
+		major = match[1]
+	}
+
+	lowerUA := strings.ToLower(ua)
+	platform = "Windows"
+	mobile = "?0"
+	brand := "Google Chrome"
+
+	switch {
+	case strings.Contains(lowerUA, "android"):
+		platform = "Android"
+		mobile = "?1"
+	case strings.Contains(lowerUA, "iphone") || strings.Contains(lowerUA, "ipad"):
+		platform = "iOS"
+		mobile = "?1"
+	case strings.Contains(lowerUA, "linux"):
+		platform = "Linux"
+	}
+
+	if strings.Contains(lowerUA, "wv)") || strings.Contains(lowerUA, "android webview") {
+		brand = "Android WebView"
+	}
+
+	secChUa = fmt.Sprintf(`"Chromium";v="%s", "Not-A.Brand";v="24", "%s";v="%s"`, major, brand, major)
+	return secChUa, platform, mobile
+}
+
+func extractCaptchaResponseStatus(resp map[string]interface{}) string {
+	respObj, ok := resp["response"].(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	status, _ := respObj["status"].(string)
+	return status
+}
+
+func summarizeCaptchaResponse(resp map[string]interface{}) string {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Sprintf("%v", resp)
+	}
+	return truncateCaptchaLog(string(data), 1200)
+}
+
+func truncateCaptchaLog(text string, maxLen int) string {
+	if len(text) <= maxLen {
+		return text
+	}
+	return text[:maxLen] + "...(truncated)"
 }
 
 func parseCaptchaSettingsResponse(resp map[string]interface{}) (*captchaSettingsResponse, error) {
@@ -798,10 +942,10 @@ func pixelDiff(left color.Color, right color.Color) int64 {
 	rr, rg, rb, _ := right.RGBA()
 
 	diff := absDiff(lr, rr) + absDiff(lg, rg) + absDiff(lb, rb)
-	
+
 	// Ограничиваем приоритет белого фона:
 	luma := lr + lg + lb + rr + rg + rb
-	
+
 	return diff + int64(luma/200)
 }
 
