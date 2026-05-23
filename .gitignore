@@ -1,0 +1,53 @@
+# ===== Gradle =====
+.gradle/
+build/
+local.properties
+
+# ===== Android =====
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+app/build/
+app/release/
+
+# ===== Go =====
+go.sum
+
+# ===== Native Libraries (compiled) =====
+*.so
+*.dll
+*.dylib
+jniLibs/
+app/src/main/jniLibs/
+
+# ===== Server binary =====
+app/src/main/assets/server
+server
+
+# ===== Keystore / Secrets =====
+*.keystore
+*.jks
+*.key
+*.pem
+
+# ===== IDE =====
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+*~
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ===== Misc =====
+*.log
+*.tmp
+*.bak
+msg.txt
+*.bat
