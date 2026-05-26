@@ -41,6 +41,17 @@
                 android:value="persistent_vpn_tunnel_transport" />
         </service>
 
+        <service
+            android:name=".QuickToggleTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_connected"
+            android:label="WDTT"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <activity
             android:name=".ManlCaptchaActivity"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
