@@ -38,7 +38,8 @@ import androidx.compose.runtime.Stable
 data class AppItem(
     val name: String,
     val packageName: String,
-    val icon: ImageBitmap?
+    val icon: ImageBitmap?,
+    val isSystem: Boolean
 )
 
 object AppCache {
@@ -61,6 +62,8 @@ fun ExceptionsTab() {
     var isLoading by remember { mutableStateOf(AppCache.cachedList == null) }
     var searchQuery by remember { mutableStateOf("") }
 
+    val showSystemAppsOpt by settingsStore.showSystemApps.collectAsStateWithLifecycle(initialValue = null)
+
     val isWhitelist by settingsStore.isWhitelist.collectAsStateWithLifecycle(initialValue = false)
 
     // Load Apps
@@ -76,10 +79,12 @@ fun ExceptionsTab() {
                 if (app.packageName != context.packageName &&
                     !app.packageName.contains("vkontakte") &&
                     !app.packageName.contains("vk.calls")) {
+                    val isSys = (app.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
                     list.add(AppItem(
                         name = app.loadLabel(pm).toString(),
                         packageName = app.packageName,
-                        icon = app.loadIcon(pm)?.toBitmap()?.asImageBitmap()
+                        icon = app.loadIcon(pm)?.toBitmap()?.asImageBitmap(),
+                        isSystem = isSys
                     ))
                 }
             }
@@ -91,8 +96,17 @@ fun ExceptionsTab() {
 
     val filteredApps by remember {
         derivedStateOf {
-            if (searchQuery.isBlank()) appsList
-            else appsList.filter {
+            val showSystemApps = showSystemAppsOpt ?: true
+            val list = if (showSystemApps) {
+                appsList
+            } else {
+                appsList.filter {
+                    !it.isSystem || it.packageName == "com.google.android.youtube" || it.packageName == "com.android.vending"
+                }
+            }
+
+            if (searchQuery.isBlank()) list
+            else list.filter {
                 it.name.contains(searchQuery, ignoreCase = true) ||
                 it.packageName.contains(searchQuery, ignoreCase = true)
             }
@@ -174,10 +188,37 @@ fun ExceptionsTab() {
                     }
                 }
             }
+
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 12.dp),
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    "Системные приложения",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Switch(
+                    checked = showSystemAppsOpt ?: true,
+                    onCheckedChange = { enabled ->
+                        scope.launch {
+                            settingsStore.saveShowSystemApps(enabled)
+                        }
+                    }
+                )
+            }
         }
 
         // List
-        if (isLoading) {
+        if (isLoading || showSystemAppsOpt == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }

@@ -36,8 +36,13 @@ import android.os.Build
 import androidx.compose.ui.graphics.Color
 import kotlin.math.roundToInt
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+
 @Composable
 fun FloatingToolbar(
+    activeProfile: Int,
+    onActiveProfileChange: (Int) -> Unit,
     currentTheme: String,
     onThemeChange: (String) -> Unit,
     isDynamicColor: Boolean,
@@ -54,6 +59,9 @@ fun FloatingToolbar(
     val screenWidthPx = remember(configuration.screenWidthDp, density) {
         with(density) { configuration.screenWidthDp.dp.toPx() }
     }
+
+    var parentWidthPx by remember { mutableFloatStateOf(0f) }
+    var parentHeightPx by remember { mutableFloatStateOf(0f) }
 
     var offsetY by rememberSaveable { mutableFloatStateOf(-1f) }
     var isRightSide by rememberSaveable { mutableStateOf(true) }
@@ -76,12 +84,16 @@ fun FloatingToolbar(
     } else {
         effectiveTabHeightPx
     }
-    val minOffsetY = safeTopPx + edgePaddingPx
-    val maxOffsetY = (screenHeightPx - safeBottomPx - floatingHeightPx - edgePaddingPx)
-        .coerceAtLeast(minOffsetY)
-    val defaultOffsetY = (screenHeightPx * 0.24f).coerceIn(minOffsetY, maxOffsetY)
+    
+    val currentParentHeight = if (parentHeightPx > 0f) parentHeightPx else screenHeightPx
+    val currentParentWidth = if (parentWidthPx > 0f) parentWidthPx else screenWidthPx
 
-    val targetXPx = if (isRightSide) screenWidthPx - tabWidthPx else 0f
+    val minOffsetY = safeTopPx + edgePaddingPx
+    val maxOffsetY = (currentParentHeight - safeBottomPx - floatingHeightPx - edgePaddingPx)
+        .coerceAtLeast(minOffsetY)
+    val defaultOffsetY = (currentParentHeight * 0.24f).coerceIn(minOffsetY, maxOffsetY)
+
+    val targetXPx = if (isRightSide) currentParentWidth - tabWidthPx else 0f
 
     val animatedTabXPx by animateFloatAsState(
         targetValue = targetXPx,
@@ -93,7 +105,14 @@ fun FloatingToolbar(
         offsetY = if (offsetY < 0f) defaultOffsetY else offsetY.coerceIn(minOffsetY, maxOffsetY)
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .onGloballyPositioned { coordinates ->
+                parentWidthPx = coordinates.size.width.toFloat()
+                parentHeightPx = coordinates.size.height.toFloat()
+            }
+    ) {
         Surface(
             onClick = { isExpanded = !isExpanded },
             modifier = Modifier
@@ -114,16 +133,16 @@ fun FloatingToolbar(
             else
                 RoundedCornerShape(topEnd = 14.dp, bottomEnd = 14.dp),
             color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.9f),
-            shadowElevation = 6.dp,
-            tonalElevation = 4.dp,
+            shadowElevation = 0.dp,
+            tonalElevation = 0.dp,
         ) {
             Box(
                 modifier = Modifier.size(tabWidthDp, tabHeightDp),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    painter = painterResource(id = R.drawable.ic_palette),
-                    contentDescription = "Тема",
+                    imageVector = Icons.Filled.Settings,
+                    contentDescription = "Настройки",
                     modifier = Modifier.size(22.dp),
                     tint = MaterialTheme.colorScheme.onPrimaryContainer
                 )
@@ -151,13 +170,54 @@ fun FloatingToolbar(
                 },
                 shape = RoundedCornerShape(32.dp),
                 color = MaterialTheme.colorScheme.surface,
-                shadowElevation = 8.dp,
-                tonalElevation = 4.dp,
+                shadowElevation = 0.dp,
+                tonalElevation = 0.dp,
             ) {
                 Column(
                     modifier = Modifier.padding(12.dp).width(panelWidthDp - 24.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
+                    Text(
+                        "Профиль",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(0, 1, 2).forEach { profile ->
+                            val selected = profile == activeProfile
+                            Surface(
+                                onClick = { onActiveProfileChange(profile) },
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Box(
+                                    modifier = Modifier.padding(vertical = 8.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "Пр. $profile",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+
                     Text(
                         "Тема",
                         style = MaterialTheme.typography.labelMedium,

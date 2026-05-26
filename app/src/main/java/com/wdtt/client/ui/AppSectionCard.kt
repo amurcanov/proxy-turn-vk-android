@@ -51,8 +51,8 @@ fun AppSectionCard(
         color = appSectionCardColor(),
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(1.dp, appSectionCardBorderColor()),
-        shadowElevation = if (MaterialTheme.colorScheme.background.luminance() < 0.22f) 2.dp else 10.dp,
-        tonalElevation = if (MaterialTheme.colorScheme.background.luminance() < 0.22f) 0.dp else 2.dp,
+        shadowElevation = 0.dp,
+        tonalElevation = 0.dp,
         modifier = modifier.fillMaxWidth()
     ) {
         Column(

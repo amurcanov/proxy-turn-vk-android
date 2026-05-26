@@ -374,15 +374,13 @@ func applySliderSwapsV2(gridSize int, swaps []int) ([]int, error) {
 }
 
 func sliderTileRect(bounds image.Rectangle, gridSize int, index int) image.Rectangle {
-	w := bounds.Dx() / gridSize
-	h := bounds.Dy() / gridSize
 	col := index % gridSize
 	row := index / gridSize
 	return image.Rect(
-		bounds.Min.X+col*w,
-		bounds.Min.Y+row*h,
-		bounds.Min.X+(col+1)*w,
-		bounds.Min.Y+(row+1)*h,
+		bounds.Min.X+(col*bounds.Dx())/gridSize,
+		bounds.Min.Y+(row*bounds.Dy())/gridSize,
+		bounds.Min.X+((col+1)*bounds.Dx())/gridSize,
+		bounds.Min.Y+((row+1)*bounds.Dy())/gridSize,
 	)
 }
 

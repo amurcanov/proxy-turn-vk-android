@@ -13,7 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-	"time"
 )
 
 // CaptchaResultChan — канал для получения токена капчи из внешнего решателя (WebView)
@@ -284,18 +283,17 @@ func main() {
 		}
 
 		gID := g + 1
-		cycle := time.Duration(defaultCycleSecs) * time.Second
 		var cc chan<- string
 		if isFirst {
 			cc = configCh
 		}
 
 		wg.Add(1)
-		go func(groupID int, cycleDir time.Duration, isFirstGroup bool, configChan chan<- string, workerIds []int, startHashIndex int, waitR <-chan struct{}, sigR chan<- struct{}) {
+		go func(groupID int, isFirstGroup bool, configChan chan<- string, workerIds []int, startHashIndex int, waitR <-chan struct{}, sigR chan<- struct{}) {
 			defer wg.Done()
 			WorkerGroup(ctx, groupID, startHashIndex, tp, peer, disp, localPort,
-				isFirstGroup, configChan, workerIds, cycleDir, &pauseFlag, *deviceID, *connPassword, stats, waitR, sigR)
-		}(gID, cycle, isFirst, cc, ids, g, myWaitReady, mySignalReady)
+				isFirstGroup, configChan, workerIds, &pauseFlag, *deviceID, *connPassword, stats, waitR, sigR)
+		}(gID, isFirst, cc, ids, g, myWaitReady, mySignalReady)
 	}
 
 	wg.Wait()

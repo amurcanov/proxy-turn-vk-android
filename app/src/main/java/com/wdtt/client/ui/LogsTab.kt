@@ -29,11 +29,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wdtt.client.LogEntry
 import com.wdtt.client.TunnelManager
 import com.wdtt.client.WDTTColors
+import com.wdtt.client.SettingsStore
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LogsTab() {
     val context = LocalContext.current
+    val settingsStore = remember { SettingsStore(context) }
+    val loggingEnabled by settingsStore.loggingEnabled.collectAsStateWithLifecycle(initialValue = true)
+    val scope = rememberCoroutineScope()
     val currentLogs by TunnelManager.logs.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
 
@@ -62,6 +67,38 @@ fun LogsTab() {
                 }) {
                     Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = MaterialTheme.colorScheme.primary)
                 }
+            }
+        }
+
+        // Карточка-выключатель логирования
+        AppSectionCard(
+            modifier = Modifier.padding(bottom = 12.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    "Активное логирование",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Switch(
+                    checked = loggingEnabled,
+                    onCheckedChange = { enabled ->
+                        scope.launch {
+                            settingsStore.saveLoggingEnabled(enabled)
+                            if (!enabled) {
+                                TunnelManager.clearLogs()
+                            }
+                        }
+                    }
+                )
             }
         }
 

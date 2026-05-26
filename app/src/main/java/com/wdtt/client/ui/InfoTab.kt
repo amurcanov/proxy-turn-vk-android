@@ -1,5 +1,7 @@
 package com.wdtt.client.ui
 
+import androidx.compose.runtime.MutableState
+
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -156,7 +158,10 @@ private fun openUrlInBrowser(context: Context, url: String) {
 }
 
 @Composable
-fun InfoTab() {
+fun InfoTab(
+    actionsExpandedState: MutableState<Boolean> = rememberSaveable { mutableStateOf(true) },
+    projectExpandedState: MutableState<Boolean> = rememberSaveable { mutableStateOf(true) }
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val settingsStore = remember { SettingsStore(context) }
@@ -165,8 +170,8 @@ fun InfoTab() {
     var pendingManualRelease by remember { mutableStateOf<com.wdtt.client.AppReleaseInfo?>(null) }
     var showHelpDialog by remember { mutableStateOf(false) }
     var showDonateDialog by remember { mutableStateOf(false) }
-    var actionsExpanded by rememberSaveable { mutableStateOf(true) }
-    var projectExpanded by rememberSaveable { mutableStateOf(true) }
+    var actionsExpanded by actionsExpandedState
+    var projectExpanded by projectExpandedState
     val updateLatestVersion by settingsStore.updateLatestVersion.collectAsStateWithLifecycle(initialValue = "")
     val updateLastError by settingsStore.updateLastError.collectAsStateWithLifecycle(initialValue = "")
     val updateStatus = remember(isCheckingUpdates, updateLatestVersion, updateLastError, currentVersion) {

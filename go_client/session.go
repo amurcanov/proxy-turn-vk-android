@@ -371,7 +371,9 @@ func RunSession(
 					return
 				}
 				_ = dtlsConn.SetWriteDeadline(time.Now().Add(sessionReadTimeout))
-				if _, writeErr := dtlsConn.Write(pkt); writeErr != nil {
+				_, writeErr := dtlsConn.Write(pkt)
+				putPktBuf(pkt)
+				if writeErr != nil {
 					log.Printf("[ВОРКЕР #%d] Ошибка Writer: %v", sessionID, writeErr)
 					return
 				}
@@ -403,11 +405,12 @@ func RunSession(
 				continue
 			}
 
-			pkt := make([]byte, n)
+			pkt := getPktBuf(n)
 			copy(pkt, b[:n])
 			select {
 			case d.ReturnCh <- pkt:
 			case <-sessCtx.Done():
+				putPktBuf(pkt)
 				return
 			}
 		}

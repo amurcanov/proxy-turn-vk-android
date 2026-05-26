@@ -12,6 +12,7 @@
 package main
 
 import (
+	"crypto/cipher"
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
@@ -20,6 +21,24 @@ import (
 
 	"golang.org/x/crypto/chacha20poly1305"
 )
+
+var aeadCache sync.Map
+
+func getAEAD(key []byte) (cipher.AEAD, error) {
+	if len(key) != wrapKeyLen {
+		return nil, fmt.Errorf("obfs: key must be %d bytes", wrapKeyLen)
+	}
+	keyStr := string(key)
+	if val, ok := aeadCache.Load(keyStr); ok {
+		return val.(cipher.AEAD), nil
+	}
+	aead, err := chacha20poly1305.New(key)
+	if err != nil {
+		return nil, err
+	}
+	aeadCache.Store(keyStr, aead)
+	return aead, nil
+}
 
 // ─── Configuration ───
 
@@ -43,20 +62,22 @@ func NewObfsConfig() *ObfsConfig {
 
 // ─── Per-direction state (sequence + timestamp counters) ───
 
-// ObfsState tracks monotonically increasing RTP sequence number and timestamp.
+// ObfsState tracks monotonically increasing RTP sequence number and timestamp using a 48-bit packet counter.
 type ObfsState struct {
-	mu  sync.Mutex
-	seq uint16
-	ts  uint32
+	mu      sync.Mutex
+	initSeq uint16
+	initTs  uint32
+	count   uint64
 }
 
-// NewObfsState creates a state with random initial seq/ts.
+// NewObfsState creates a state with random initial seq/ts and count=0.
 func NewObfsState() *ObfsState {
 	var buf [6]byte
 	rand.Read(buf[:])
 	return &ObfsState{
-		seq: binary.BigEndian.Uint16(buf[0:2]),
-		ts:  binary.BigEndian.Uint32(buf[2:6]),
+		initSeq: binary.BigEndian.Uint16(buf[0:2]),
+		initTs:  binary.BigEndian.Uint32(buf[2:6]),
+		count:   0,
 	}
 }
 
@@ -89,11 +110,12 @@ func obfsWrapPacket(key, payload []byte, cfg *ObfsConfig, state *ObfsState) ([]b
 	}
 
 	state.mu.Lock()
-	seq := state.seq
-	ts := state.ts
-	state.seq++
-	state.ts += 960 // 20ms frame @ 48kHz (OPUS standard)
+	c := state.count
+	state.count++
 	state.mu.Unlock()
+
+	seq := state.initSeq + uint16(c)
+	ts := state.initTs + uint32(c)*960 + uint32(c>>16)
 
 	// Build nonce from RTP fields
 	nonce := obfsBuildNonce(cfg.SSRC, seq, ts)
@@ -118,7 +140,7 @@ func obfsWrapPacket(key, payload []byte, cfg *ObfsConfig, state *ObfsState) ([]b
 	binary.BigEndian.PutUint32(out[4:8], ts)
 	binary.BigEndian.PutUint32(out[8:12], cfg.SSRC)
 
-	aead, err := chacha20poly1305.New(key)
+	aead, err := getAEAD(key)
 	if err != nil {
 		return nil, fmt.Errorf("obfs: cipher init: %w", err)
 	}
@@ -178,7 +200,7 @@ func obfsUnwrapPacket(key, wire, dst []byte) (int, error) {
 
 	// Build nonce and decrypt
 	nonce := obfsBuildNonce(ssrc, seq, ts)
-	aead, err := chacha20poly1305.New(key)
+	aead, err := getAEAD(key)
 	if err != nil {
 		return 0, fmt.Errorf("obfs: cipher init: %w", err)
 	}

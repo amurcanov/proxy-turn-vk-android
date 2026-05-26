@@ -35,13 +35,7 @@ func LoadProfileFromDisk() (*SavedProfile, error) {
 	return &sp, nil
 }
 
-func SaveProfileToDisk(sp SavedProfile) error {
-	data, err := json.MarshalIndent(sp, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(profileFile, data, 0644)
-}
+
 
 // profileList contains paired User-Agent and Client Hints strings.
 var profileList = []Profile{

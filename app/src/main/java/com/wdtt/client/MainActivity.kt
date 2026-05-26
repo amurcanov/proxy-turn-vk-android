@@ -190,17 +190,18 @@ class MainActivity : ComponentActivity() {
 // ═══ Навигация ═══
 
 private data class NavItem(
+    val id: Int,
     val label: String,
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector,
 )
 
 private val navItems = listOf(
-    NavItem("Туннель", Icons.Filled.VpnKey, Icons.Outlined.VpnKey),
-    NavItem("Деплой", Icons.Filled.Cloud, Icons.Outlined.Cloud),
-    NavItem("Исключ.", Icons.Filled.FilterList, Icons.Outlined.FilterList),
-    NavItem("Логи", Icons.Filled.Terminal, Icons.Outlined.Terminal),
-    NavItem("Инфо", Icons.Filled.Info, Icons.Outlined.Info),
+    NavItem(0, "Туннель", Icons.Filled.VpnKey, Icons.Outlined.VpnKey),
+    NavItem(1, "Деплой", Icons.Filled.Cloud, Icons.Outlined.Cloud),
+    NavItem(2, "Исключ.", Icons.Filled.FilterList, Icons.Outlined.FilterList),
+    NavItem(3, "Логи", Icons.Filled.Terminal, Icons.Outlined.Terminal),
+    NavItem(4, "Инфо", Icons.Filled.Info, Icons.Outlined.Info),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -220,6 +221,8 @@ fun MainScreen(
     val context = LocalContext.current
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
+    val activeProfile by settingsStore.activeProfile.collectAsStateWithLifecycle(initialValue = 0)
+    val wdttLinkMode by settingsStore.wdttLinkMode.collectAsStateWithLifecycle(initialValue = false)
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var dragTargetIndex by remember { mutableIntStateOf(-1) }
     var dragProgress by remember { mutableFloatStateOf(0f) }
@@ -230,6 +233,24 @@ fun MainScreen(
     val currentVersion = remember { "v${BuildConfig.VERSION_NAME.removePrefix("v")}" }
     val safeBottomInset = with(density) { WindowInsets.safeDrawing.getBottom(density).toDp() }
     val navOverlayReserve = safeBottomInset + 96.dp
+
+    val activeNavItems = remember(wdttLinkMode) {
+        if (wdttLinkMode) {
+            navItems.filter { it.id != 1 }
+        } else {
+            navItems
+        }
+    }
+    val actionsExpanded = rememberSaveable { mutableStateOf(false) }
+    val projectExpanded = rememberSaveable { mutableStateOf(false) }
+
+
+
+    LaunchedEffect(wdttLinkMode) {
+        if (wdttLinkMode && selectedTab == 1) {
+            selectedTab = 0
+        }
+    }
 
     LaunchedEffect(selectedTab) {
         if (selectedTab == 3) TunnelManager.clearUnreadErrors()
@@ -297,7 +318,7 @@ fun MainScreen(
                     .fillMaxSize()
                     .padding(padding)
                     .consumeWindowInsets(padding)
-                    .pointerInput(selectedTab) {
+                    .pointerInput(selectedTab, wdttLinkMode) {
                         var totalDrag = 0f
                         detectHorizontalDragGestures(
                             onDragStart = {
@@ -310,8 +331,8 @@ fun MainScreen(
                                 dragProgress = 0f
                             },
                             onDragEnd = {
-                                if (dragTargetIndex in navItems.indices && dragProgress >= 0.5f) {
-                                    selectedTab = dragTargetIndex
+                                if (dragTargetIndex in activeNavItems.indices && dragProgress >= 0.5f) {
+                                    selectedTab = activeNavItems[dragTargetIndex].id
                                     if (selectedTab == 3) TunnelManager.clearUnreadErrors()
                                 }
                                 dragTargetIndex = -1
@@ -326,8 +347,9 @@ fun MainScreen(
                                 return@detectHorizontalDragGestures
                             }
 
-                            val candidate = if (totalDrag < 0f) selectedTab + 1 else selectedTab - 1
-                            if (candidate !in navItems.indices) {
+                            val currentActiveIndex = activeNavItems.indexOfFirst { it.id == selectedTab }
+                            val candidate = if (totalDrag < 0f) currentActiveIndex + 1 else currentActiveIndex - 1
+                            if (candidate !in activeNavItems.indices) {
                                 dragTargetIndex = -1
                                 dragProgress = 0f
                                 return@detectHorizontalDragGestures
@@ -350,15 +372,15 @@ fun MainScreen(
                 ) { tab ->
                     when (tab) {
                         0 -> SettingsTab()
-                        1 -> DeployTab()
+                        1 -> if (!wdttLinkMode) DeployTab() else Spacer(modifier = Modifier.fillMaxSize())
                         2 -> ExceptionsTab()
                         3 -> LogsTab()
-                        4 -> InfoTab()
+                        4 -> InfoTab(actionsExpandedState = actionsExpanded, projectExpandedState = projectExpanded)
                     }
                 }
 
                 ProxyNavigationBar(
-                    navItems = navItems,
+                    navItems = activeNavItems,
                     selectedTab = selectedTab,
                     dragTargetIndex = dragTargetIndex,
                     dragProgress = dragProgress,
@@ -380,6 +402,10 @@ fun MainScreen(
 
         // Floating theme toolbar overlay
         FloatingToolbar(
+            activeProfile = activeProfile,
+            onActiveProfileChange = { profile ->
+                scope.launch { settingsStore.saveActiveProfile(profile) }
+            },
             currentTheme = themeMode,
             onThemeChange = onThemeChange,
             isDynamicColor = isDynamicColor,
@@ -453,13 +479,16 @@ private fun ProxyNavigationBar(
     } else {
         lerp(colors.primaryContainer, colors.surface, 0.18f).copy(alpha = 0.97f)
     }
-    val indicatorIndex = remember { Animatable(selectedTab.toFloat()) }
+    val selectedVisualIndex = remember(selectedTab, navItems) {
+        navItems.indexOfFirst { it.id == selectedTab }.coerceAtLeast(0)
+    }
+    val indicatorIndex = remember { Animatable(selectedVisualIndex.toFloat()) }
     val dragVisualIndex = indicatorIndex.value
 
-    LaunchedEffect(selectedTab) {
+    LaunchedEffect(selectedVisualIndex) {
         if (dragTargetIndex !in navItems.indices) {
             indicatorIndex.animateTo(
-                targetValue = selectedTab.toFloat(),
+                targetValue = selectedVisualIndex.toFloat(),
                 animationSpec = tween(
                     durationMillis = 720,
                     easing = CubicBezierEasing(0.2f, 0.9f, 0.24f, 1f)
@@ -468,9 +497,9 @@ private fun ProxyNavigationBar(
         }
     }
 
-    LaunchedEffect(selectedTab, dragTargetIndex, dragProgress) {
+    LaunchedEffect(selectedVisualIndex, dragTargetIndex, dragProgress) {
         if (dragTargetIndex in navItems.indices) {
-            val target = selectedTab.toFloat() + (dragTargetIndex - selectedTab) * dragProgress
+            val target = selectedVisualIndex.toFloat() + (dragTargetIndex - selectedVisualIndex) * dragProgress
             indicatorIndex.snapTo(target)
         }
     }
@@ -522,7 +551,7 @@ private fun ProxyNavigationBar(
                                 .weight(1f)
                                 .fillMaxHeight()
                                 .clip(RoundedCornerShape(22.dp))
-                                .clickable { onTabSelected(index) },
+                                .clickable { onTabSelected(item.id) },
                             verticalArrangement = Arrangement.Center,
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
@@ -533,7 +562,7 @@ private fun ProxyNavigationBar(
                                     modifier = Modifier.size(22.dp),
                                     tint = iconColor
                                 )
-                                if (index == 3 && unreadErrors > 0) {
+                                if (item.id == 3 && unreadErrors > 0) {
                                     Badge(
                                         containerColor = if (tunnelRunning) colors.primary else WDTTColors.warning,
                                         contentColor = colors.onPrimary,

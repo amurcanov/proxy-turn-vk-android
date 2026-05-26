@@ -91,9 +91,9 @@ fun DeployTab() {
     val deployProgress by DeployManager.deployProgress.collectAsStateWithLifecycle()
     val currentStep by DeployManager.currentStep.collectAsStateWithLifecycle()
 
-    LaunchedEffect(savedIp) { if (savedIp.isNotEmpty()) ip = savedIp }
-    LaunchedEffect(savedLogin) { if (savedLogin.isNotEmpty()) login = savedLogin }
-    LaunchedEffect(savedPassword) { if (savedPassword.isNotEmpty()) password = savedPassword }
+    LaunchedEffect(savedIp) { ip = savedIp }
+    LaunchedEffect(savedLogin) { login = savedLogin }
+    LaunchedEffect(savedPassword) { password = savedPassword }
     val animatedProgress by animateFloatAsState(
         targetValue = deployProgress,
         animationSpec = tween(durationMillis = 1200, easing = androidx.compose.animation.core.FastOutSlowInEasing),

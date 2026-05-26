@@ -40,7 +40,7 @@ object TunnelManager {
     private var refusedCount = 0
     private var currentHashErrorCount = 0
     private var wrapAuthTimeoutCount = 0
-    private var processStartedAtMs = 0L
+    var processStartedAtMs = 0L
     private var lastActiveAtMs = 0L
     private var activeHashIndex = 0 // 0: primary, 1: secondary
     private var currentParams: TunnelParams? = null
@@ -49,6 +49,9 @@ object TunnelManager {
     private var currentCaptchaMode = "wv" // режим обхода капчи: "wv" или "rjs"
     private var currentCaptchaSolveMethod = "auto" // "manual" или "auto"
 
+    @Volatile
+    var isLoggingEnabled = true
+
     val running = MutableStateFlow(false)
     val logs = MutableStateFlow<List<LogEntry>>(emptyList())
     val unreadErrorCount = MutableStateFlow(0)
@@ -56,7 +59,7 @@ object TunnelManager {
     val stats = MutableStateFlow("Ожидание данных...")
     val activeWorkers = MutableStateFlow(0)
     
-    val cooldownSeconds = MutableStateFlow(0)
+    val cooldownActive = MutableStateFlow(false)
     private var cooldownJob: Job? = null
 
     fun clearUnreadErrors() {
@@ -75,6 +78,7 @@ object TunnelManager {
     }
 
     private fun updateLog(key: String, message: String, priority: Int, isError: Boolean = false) {
+        if (!isLoggingEnabled) return
         if (isError) {
             val list = logs.value
             if (list.none { it.key == key }) {
@@ -152,13 +156,11 @@ object TunnelManager {
                 }
 
                 val hashCount = hashList.size.coerceIn(1, 3)
-                val totalWorkers = params.workersPerHash.coerceIn(1, 128) // Максимум ограничивается UI (80), но тут ставим хард-лимит побольше на случай запаса
+                val totalWorkers = params.workersPerHash.coerceIn(1, 128)
                 
                 val hashMode = if (activeHashIndex == 0) "Основной" else "Запасной"
                 updateLog("config_info", "[$hashMode] Хешей=$hashCount, Потоков=$totalWorkers", 1)
 
-
-                // CRITICAL FIX: Use nativeLibraryDir with extractNativeLibs="true"
                 val binaryPath = context.applicationInfo.nativeLibraryDir + "/libclient.so"
                 val binaryFile = File(binaryPath)
                 
@@ -182,15 +184,13 @@ object TunnelManager {
                 cmd.add("-password")
                 cmd.add(params.connectionPassword)
 
-                // Captcha mode: wv или rjs
                 cmd.add("-captcha-mode")
                 cmd.add(params.captchaMode)
 
                 val pb = ProcessBuilder(cmd)
-                pb.directory(context.filesDir) // Устанавливаем рабочую директорию
+                pb.directory(context.filesDir)
                 pb.redirectErrorStream(true)
                 
-                // Set LD_LIBRARY_PATH
                 val env = pb.environment()
                 env["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
 
@@ -220,7 +220,6 @@ object TunnelManager {
                 var lastResetTime = System.currentTimeMillis()
 
                 reader.forEachLine { line ->
-                    // Периодический сброс счетчиков ошибок (раз в 60 сек)
                     val now = System.currentTimeMillis()
                     if (now - lastResetTime > 60000) {
                         refusedCount = 0
@@ -230,13 +229,11 @@ object TunnelManager {
                         lastResetTime = now
                     }
 
-                    // Чистим лог от даты из Go (например, "2023/10/24 12:34:56.123456 [ВОРКЕР...")
                     val msgPrefixReplaced = line.replace(Regex("^\\d{4}/\\d{2}/\\d{2}\\s\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\s"), "")
                     val lineTrim = msgPrefixReplaced.trim()
 
                     val isError = lineTrim.contains("Ошибка", true) || lineTrim.contains("error", true) || lineTrim.contains("FAIL", true) || lineTrim.contains("timeout", true) || lineTrim.contains("refused", true) || lineTrim.contains("FATAL_AUTH", true)
 
-                    // 0. FATAL AUTH — мгновенная остановка
                     if (lineTrim.contains("FATAL_AUTH")) {
                         val isWrapHandshakeTimeout = lineTrim.contains("DTLS timeout", true) ||
                             lineTrim.contains("WRAP_AUTH_TIMEOUT", true)
@@ -271,30 +268,27 @@ object TunnelManager {
                         return@forEachLine
                     }
 
-                    // 0a. WRAP auth timeout — не фатально для отдельного воркера.
-                    // Критичным считаем только ситуацию, когда за стартовое окно не поднялся ни один поток.
                     if (lineTrim.contains("WRAP_AUTH_TIMEOUT", true)) {
                         if (activeWorkers.value > 0) {
                             wrapAuthTimeoutCount = 0
                             updateLog(
                                 "wrap_timeout_recovered",
                                 "[WRAP] Один поток не прошёл handshake, активных=${activeWorkers.value}; повторяем",
-                                50,
-                                true
+                                    50,
+                                    true
                             )
                         } else {
                             wrapAuthTimeoutCount++
                             updateLog(
                                 "wrap_timeout_wait",
                                 "[WRAP] Handshake не подтвердился, проверяем пароль/сеть ($wrapAuthTimeoutCount)",
-                                50,
-                                true
+                                    50,
+                                    true
                             )
                         }
                         return@forEachLine
                     }
 
-                    // 0b. CAPTCHA_SOLVE — запрос от Go для WBV-режима.
                     if (lineTrim.startsWith("CAPTCHA_SOLVE|")) {
                         val payload = lineTrim.substringAfter("CAPTCHA_SOLVE|")
                         val parts = payload.split("|", limit = 3)
@@ -321,7 +315,6 @@ object TunnelManager {
                         return@forEachLine
                     }
 
-                    // 1. ПРЕДОХРАНИТЕЛЬ (Circuit Breaker)
                     if (isError) {
                         when {
                             lineTrim.contains("Flood control", true) -> {
@@ -339,7 +332,6 @@ object TunnelManager {
                                 }
                             }
                             lineTrim.contains("connection refused", true) || lineTrim.contains("timeout", true) -> {
-                                // Огромный лимит, потому что каждый воркер кидает эту ошибку при смене сети
                                 refusedCount++
                                 if (refusedCount >= 400) {
                                     handleCriticalError("Критическое отсутствие сети (400+ таймаутов). Отключение.")
@@ -348,7 +340,6 @@ object TunnelManager {
                             }
                             lineTrim.contains("9000") || lineTrim.contains("Call not found", true) -> {
                                 currentHashErrorCount++
-                                // Нужно больше попыток, так как 1 воркер может спамить
                                 if (currentHashErrorCount >= 10) {
                                     handleHashError()
                                     return@forEachLine
@@ -357,7 +348,6 @@ object TunnelManager {
                         }
                     }
 
-                    // 1. Статистика (Обновляемая строка)
                     if (lineTrim.contains("[СТАТИСТИКА]")) {
                         val msg = lineTrim.substringAfter("[СТАТИСТИКА]").trim()
                         stats.value = msg
@@ -376,10 +366,7 @@ object TunnelManager {
                         return@forEachLine
                     }
 
-                    // 2. Этапы подключения и Ошибки
                     when {
-
-                        // ═══ Авто-оркестратор капчи ═══
                         lineTrim.contains("[КАПЧА] AUTO:") -> {
                             var text = lineTrim.substringAfter("[КАПЧА] AUTO:").trim()
                             text = text.replace(Regex("\\s*\\([^)]+\\)\\s*"), " ").trim()
@@ -399,9 +386,7 @@ object TunnelManager {
                             updateLog(stableKey, "[КАПЧА AUTO] $text", 5, isErr)
                         }
 
-                        // ═══ RJS капча логи: [КАПЧА RJS] со стабильными ключами-шагами ═══
                         lineTrim.contains("[КАПЧА] RJS:") -> {
-                            // Удаляем тайминги и лишние скобки: (123мс), (diff=2), (общее время...)
                             var text = lineTrim.substringAfter("[КАПЧА] RJS:").trim()
                             text = text.replace(Regex("\\s*\\([^)]+\\)\\s*"), " ").trim()
                             
@@ -417,15 +402,14 @@ object TunnelManager {
                             updateLog(stableKey, "[КАПЧА RJS] $text", 5, false)
                         }
 
-                        // ═══ WV капча логи от Go: [КАПЧА WBV] со стабильными ключами ═══
                         lineTrim.contains("[КАПЧА] WBV:") -> {
                             var text = lineTrim.substringAfter("[КАПЧА] WBV:").trim()
                             text = text.replace(Regex("\\s*\\([^)]+\\)\\s*"), " ").trim()
                             
                             val isErr = text.contains("Ошибка")
                             val stableKey = when {
-                                text.contains("Запрос") -> "captcha_wv_step_2" // Step 2 (после создания WV)
-                                text.contains("Токен") -> "captcha_wv_step_5"  // Step 5 (перед уничтожением)
+                                text.contains("Запрос") -> "captcha_wv_step_2"
+                                text.contains("Токен") -> "captcha_wv_step_5"
                                 isErr -> "captcha_wv_err"
                                 else -> "captcha_wv_go_other"
                             }
@@ -462,9 +446,7 @@ object TunnelManager {
                         lineTrim.contains("Активна ✓") ->
                             updateLog("ready", "[READY] Туннель готов к работе ✓", 2, false)
                         
-                        // Ошибки (в конец)
                         isError -> {
-                            // Формируем уникальный ключ ошибки на основе её типа (группируем по типу ошибки)
                             val errorKey = when {
                                 lineTrim.contains("lookup login.vk.ru", true) -> "err_vk_dns"
                                 lineTrim.contains("connection refused") -> "err_conn_refused"
@@ -482,7 +464,6 @@ object TunnelManager {
                         }
                     }
 
-                    // 3. Обработка конфига (Скрываем от пользователя)
                     if (line.contains("╔") && line.contains("WireGuard")) {
                         collectingConfig = true
                         configBuilder.clear()
@@ -528,7 +509,7 @@ object TunnelManager {
         val context = lastContext ?: return
 
         currentHashErrorCount = 0
-        forceRegenerateUA = true // Перегенерируем UA при следующих ошибках
+        forceRegenerateUA = true
 
         if (params.secondaryVkHash.isNotEmpty() && activeHashIndex == 0) {
             updateLog("hash_switch", "Основной хеш мертв. Переключение на запасной...", 50, true)
@@ -541,18 +522,14 @@ object TunnelManager {
         }
     }
 
-    // ==================== WATCHDOG ====================
-    // Проверяет, жив ли Go-процесс. Если умер — перезапускает.
-    // Если процесс жив, но 0 воркеров уже 30 сек — тоже перезапуск (зомби).
     private fun startWatchdog(context: Context, params: TunnelParams) {
         watchdogJob?.cancel()
         watchdogJob = scope.launch {
             var zeroWorkersSince = 0L
-            delay(10_000) // Даём 10 сек на старт
+            delay(10_000)
             while (isActive && running.value) {
                 val proc = process
                 if (proc == null || !proc.isAlive) {
-                    // Go-процесс мёртв!
                     updateLog("watchdog", "⚠ Процесс упал. Перезапуск...", 50, true)
                     activeWorkers.value = 0
                     forceRegenerateUA = true
@@ -561,10 +538,9 @@ object TunnelManager {
                     if (running.value) {
                         start(context, params, isSwitching = true)
                     }
-                    return@launch // startWatchdog будет перезапущен из start()
+                    return@launch
                 }
 
-                // Детекция зомби: процесс жив, но 0 воркеров
                 val workers = activeWorkers.value
                 if (workers <= 0) {
                     if (zeroWorkersSince == 0L) {
@@ -601,7 +577,7 @@ object TunnelManager {
         val params = currentParams ?: return
         val context = lastContext ?: return
         updateLog("network_restart", "[СЕТЬ] Перезапуск транспорта из-за смены сети...", 50, false)
-        killProcess() // Только убиваем процесс, running не трогаем!
+        killProcess()
         scope.launch {
             delay(1500)
             start(context, params, isSwitching = true)
@@ -610,7 +586,7 @@ object TunnelManager {
 
     fun pause() {
         if (!running.value) return
-        killProcess() // Не ставим running=false, чтоб сервис не умер
+        killProcess()
         activeWorkers.value = 0
     }
 
@@ -622,7 +598,6 @@ object TunnelManager {
         }
     }
 
-    // Убивает процесс без изменения running
     private fun killProcess() {
         watchdogJob?.cancel()
         readerJob?.cancel()
@@ -630,7 +605,6 @@ object TunnelManager {
         process = null
         if (proc != null) {
             try { proc.destroy() } catch (_: Exception) {}
-            // Даём 500мс на graceful shutdown
             try { proc.waitFor(500, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (_: Exception) {}
             if (proc.isAlive) {
                 try { proc.destroyForcibly() } catch (_: Exception) {}
@@ -644,10 +618,6 @@ object TunnelManager {
         running.value = false
     }
 
-    private fun log(message: String) {
-        updateLog("internal_${message.hashCode()}", message, 50, false)
-    }
-
     fun stop() {
         scope.launch(Dispatchers.Main) {
             wgHelper?.stopTunnel()
@@ -659,9 +629,7 @@ object TunnelManager {
         ManlCaptchaWebViewManager.cancelCaptcha()
     }
 
-    // Suspend-версия: гарантирует что процесс мёртв и порт свободен
     suspend fun stopAndWait() {
-        // Сначала останавливаем WireGuard и ждём завершения
         withContext(Dispatchers.Main) {
             wgHelper?.stopTunnel()
         }
@@ -671,11 +639,10 @@ object TunnelManager {
             activeWorkers.value = 0
             currentParams = null
             ManlCaptchaWebViewManager.cancelCaptcha()
-            // Ждём освобождения порта 9000 (до 3 секунд)
             repeat(30) {
                 try {
                     java.net.ServerSocket(9000, 1, java.net.InetAddress.getByName("127.0.0.1")).use { it.close() }
-                    return@withContext // Порт свободен!
+                    return@withContext
                 } catch (_: Exception) {
                     delay(100)
                 }
@@ -691,15 +658,6 @@ object TunnelManager {
         }
     }
 
-    // ==================== CAPTCHA SOLVER (WebView Mode) ====================
-
-    /**
-     * Вызывается при получении CAPTCHA_SOLVE от Go-процесса.
-     * auto: одна короткая скрытая попытка для Go-оркестратора.
-     * manual: сразу видимый WebView.
-     * selected: старое поведение из UI, когда пользователь сам выбрал режим.
-     * Результат ВСЕГДА отправляется обратно в Go через writeCaptchaResult.
-     */
     private suspend fun handleCaptchaSolve(requestMode: String, redirectUri: String, sessionToken: String) {
         val ctx = lastContext ?: run {
             writeCaptchaResult("error:context is null")
@@ -743,7 +701,6 @@ object TunnelManager {
             writeCaptchaResult("error:$errorMsg")
         }
 
-        // WebView уничтожен в finally блоке соответствующего менеджера.
         updateLog("captcha_wv_step_6", "[КАПЧА WBV] WebView уничтожен", 5, false)
     }
 
@@ -785,9 +742,6 @@ object TunnelManager {
         return ManlCaptchaWebViewManager.solveCaptchaAsync(ctx, redirectUri, sessionToken)
     }
 
-    /**
-     * Записывает результат решения капчи в stdin Go-процесса.
-     */
     private fun writeCaptchaResult(result: String) {
         val proc = process
         if (proc == null || !proc.isAlive) return
@@ -802,17 +756,17 @@ object TunnelManager {
 
     fun clearLogs() {
         logs.value = emptyList()
-        activeWorkers.value = 0
+        if (!running.value) {
+            activeWorkers.value = 0
+        }
     }
 
-    fun startCooldown(seconds: Int) {
+    fun startCooldown(millis: Long) {
         cooldownJob?.cancel()
-        cooldownSeconds.value = seconds
+        cooldownActive.value = true
         cooldownJob = scope.launch(Dispatchers.Main) {
-            while (cooldownSeconds.value > 0) {
-                delay(1000)
-                cooldownSeconds.update { it - 1 }
-            }
+            delay(millis)
+            cooldownActive.value = false
         }
     }
 
@@ -831,6 +785,6 @@ data class TunnelParams(
     val sni: String = "",
     val connectionPassword: String = "",
     val protocol: String = "udp",
-    val captchaMode: String = "auto", // "auto", "wv" или "rjs"
-    val captchaSolveMethod: String = "auto" // "manual" или "auto"
+    val captchaMode: String = "auto",
+    val captchaSolveMethod: String = "auto"
 )

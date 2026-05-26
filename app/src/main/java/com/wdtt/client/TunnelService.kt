@@ -283,6 +283,15 @@ class TunnelService : Service() {
                     stopSelf()
                     break
                 }
+                if (TunnelManager.running.value && !isTunnelPaused) {
+                    val helper = WireGuardHelper(applicationContext)
+                    val startupWindow = System.currentTimeMillis() - TunnelManager.processStartedAtMs < 6000
+                    if (!startupWindow && !helper.isTunnelUp()) {
+                        Log.w("TunnelService", "Обнаружена пропажа или замена VPN-интерфейса! Экстренное выключение туннеля.")
+                        stopTunnel()
+                        break
+                    }
+                }
                 if (!isTunnelPaused) {
                     updateNotification(buildTunnelNotificationText())
                 }

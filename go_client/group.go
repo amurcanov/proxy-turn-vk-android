@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"math/rand"
 	"net"
@@ -12,7 +11,6 @@ import (
 	"time"
 )
 
-var groupAuthMutex sync.Mutex
 
 const (
 	workersPerGroup  = 9
@@ -32,7 +30,6 @@ func WorkerGroup(
 	getConfig bool,
 	configCh chan<- string,
 	workerIDs []int,
-	cycleDuration time.Duration,
 	pauseFlag *int32,
 	deviceID, password string,
 	stats *Stats,
@@ -296,5 +293,4 @@ type Credentials struct {
 	CacheStreamID int
 }
 
-// Unused import suppressor
-var _ = fmt.Sprintf
+

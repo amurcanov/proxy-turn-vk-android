@@ -29,6 +29,9 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.service.quicksettings.ACTION_QS_TILE_PREFERENCES" />
+            </intent-filter>
         </activity>
 
         <service
@@ -41,6 +44,17 @@
                 android:value="persistent_vpn_tunnel_transport" />
         </service>
 
+        <service
+            android:name=".QuickToggleTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_tile_logo_w"
+            android:label="WDTT"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <activity
             android:name=".ManlCaptchaActivity"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
@@ -51,6 +65,19 @@
         <receiver
             android:name=".CaptchaCancelReceiver"
             android:exported="false" />
+
+        <receiver
+            android:name=".VpnWidgetProvider"
+            android:label="WDTT ВПН Виджет"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.wdtt.client.ACTION_WIDGET_TOGGLE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/vpn_widget_info" />
+        </receiver>
             
     </application>
 

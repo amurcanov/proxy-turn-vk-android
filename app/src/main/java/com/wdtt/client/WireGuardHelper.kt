@@ -137,6 +137,15 @@ class WireGuardHelper(context: Context) {
         }
     }
 
+    suspend fun isTunnelUp(): Boolean = wgMutex.withLock {
+        val current = sharedTunnel ?: return false
+        return try {
+            backend.getState(current) == Tunnel.State.UP
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     suspend fun stopTunnel() = wgMutex.withLock {
         withContext(Dispatchers.IO) {
             try {
