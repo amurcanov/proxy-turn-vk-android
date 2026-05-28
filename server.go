@@ -223,6 +223,7 @@ func (s *wrapKeyStore) SetPasswords(mainPassword string, generated []string) err
 	s.entries = next
 	s.mu.Unlock()
 	for _, entry := range old {
+		aeadCache.Delete(string(entry.key))
 		zeroBytes(entry.key)
 	}
 	return nil
@@ -256,6 +257,7 @@ func (s *wrapKeyStore) RemovePassword(password string) {
 		if entry.id != id {
 			continue
 		}
+		aeadCache.Delete(string(entry.key))
 		zeroBytes(entry.key)
 		copy(s.entries[i:], s.entries[i+1:])
 		s.entries[len(s.entries)-1] = wrapKeyEntry{}
@@ -441,11 +443,10 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 					}
 					txt := fmt.Sprintf("🔑 *Пароль:* `%s`\n", pass)
 					if entry.VkHash != "" {
-						ports := entry.Ports
-						if ports == "" {
-							ports = "56000,56001,9000"
+						pts := strings.Split(entry.Ports, ",")
+						if len(pts) < 3 {
+							pts = []string{"56000", "56001", "9000"}
 						}
-						pts := strings.Split(ports, ",")
 						srvIP := getPublicIP()
 						link := fmt.Sprintf("wdtt://%s:%s:%s:%s:%s:%s", srvIP, pts[0], pts[1], pts[2], pass, entry.VkHash)
 						txt += fmt.Sprintf("🔗 *Быстрая ссылка:* `%s`\n", link)
@@ -520,8 +521,9 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 						// Отключаем активное устройство от WG если нужно
 						if entry.DeviceID != "" {
 							if dev, devExists := db.Devices[entry.DeviceID]; devExists {
-								pubHex, _ := b64ToHex(dev.PubKey)
-								wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
+								if pubHex, err := b64ToHex(dev.PubKey); err == nil && pubHex != "" {
+									wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
+								}
 							}
 						}
 						saveDB()
@@ -1583,7 +1585,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 			if connPassword != "" && !connIsMainPass {
 				dbMutex.Lock()
 				e, ok := db.Passwords[connPassword]
-				if !ok || e == nil || isPasswordExpired(e) {
+				if !ok || e == nil || isPasswordExpired(e) || e.IsDeactivated {
 					dbMutex.Unlock()
 					return
 				}
@@ -1624,7 +1626,7 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 			if connPassword != "" && !connIsMainPass {
 				dbMutex.Lock()
 				e, ok := db.Passwords[connPassword]
-				if !ok || e == nil || isPasswordExpired(e) {
+				if !ok || e == nil || isPasswordExpired(e) || e.IsDeactivated {
 					dbMutex.Unlock()
 					return
 				}
