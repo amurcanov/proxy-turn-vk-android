@@ -23,6 +23,13 @@ const (
 	vkCallsAnonAPIVersion = "5.276"
 )
 
+var vkCallsProfile = Profile{
+	UserAgent:       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+	SecChUa:         `"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"`,
+	SecChUaMobile:   "?0",
+	SecChUaPlatform: `"Windows"`,
+}
+
 func getVKCredsViaVKCallsPath(ctx context.Context, link string, streamID int) (string, string, []string, error) {
 	if os.Getenv("VK_SKIP_VKCALLS") == "1" {
 		return "", "", nil, fmt.Errorf("vkcalls skipped")
@@ -30,7 +37,7 @@ func getVKCredsViaVKCallsPath(ctx context.Context, link string, streamID int) (s
 
 	deviceID := uuid.New().String()
 	name := generateName()
-	profile := getRandomProfile()
+	profile := vkCallsProfile
 	linkURL := neturl.QueryEscape("https://vk.com/call/join/" + link)
 	nameEnc := neturl.QueryEscape(name)
 
@@ -43,7 +50,7 @@ func getVKCredsViaVKCallsPath(ctx context.Context, link string, streamID int) (s
 		return "", "", nil, fmt.Errorf("vkcalls client: %w", err)
 	}
 
-	log.Printf("[STREAM %d] [VKCalls] Identity - Name: %s | device_id=%s | UA: %s", streamID, name, deviceID, profile.UserAgent)
+	log.Printf("[STREAM %d] [VKCalls] Identity - Name: %s | device_id=%s | TLS=Chrome_146 | UA: %s", streamID, name, deviceID, profile.UserAgent)
 
 	doRequest := func(url string) (map[string]interface{}, error) {
 		req, err := fhttp.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(nil))
