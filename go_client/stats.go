@@ -7,9 +7,9 @@ import (
 )
 
 type Stats struct {
-	ActiveConnections int32
-	TotalBytesUp      int64
-	TotalBytesDown    int64
+	TotalBytesUp      atomic.Int64
+	TotalBytesDown    atomic.Int64
+	ActiveConnections atomic.Int32
 }
 
 func NewStats() *Stats {
@@ -25,9 +25,9 @@ func (s *Stats) RunLoop(shutdown <-chan struct{}) {
 		case <-shutdown:
 			return
 		case <-ticker.C:
-			active := atomic.LoadInt32(&s.ActiveConnections)
-			up := atomic.LoadInt64(&s.TotalBytesUp)
-			down := atomic.LoadInt64(&s.TotalBytesDown)
+			active := s.ActiveConnections.Load()
+			up := s.TotalBytesUp.Load()
+			down := s.TotalBytesDown.Load()
 			totalMB := float64(up+down) / (1024.0 * 1024.0)
 
 			log.Printf("[СТАТИСТИКА] Активных: %d | Трафик: %.2f МБ", active, totalMB)

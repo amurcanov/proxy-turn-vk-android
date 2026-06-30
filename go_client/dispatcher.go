@@ -149,7 +149,7 @@ func (d *Dispatcher) readLoop() {
 		pkt = pkt[:n]
 
 		d.clientAddr.Store(&addr)
-		atomic.AddInt64(&d.stats.TotalBytesUp, int64(n))
+		d.stats.TotalBytesUp.Add(int64(n))
 
 		workersPtr := d.workers.Load()
 		if workersPtr == nil || len(*workersPtr) == 0 {
@@ -219,7 +219,7 @@ func (d *Dispatcher) writeLoop() {
 					return
 				}
 			}
-			atomic.AddInt64(&d.stats.TotalBytesDown, int64(len(pkt)))
+			d.stats.TotalBytesDown.Add(int64(len(pkt)))
 			putPktBuf(pkt)
 		}
 	}

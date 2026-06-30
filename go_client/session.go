@@ -8,7 +8,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/cbeuw/connutil"
@@ -294,8 +293,8 @@ func RunSession(
 	}
 	log.Printf("[ВОРКЕР #%d] [DTLS] Соединение установлено ✓", sessionID)
 
-	atomic.AddInt32(&stats.ActiveConnections, 1)
-	defer atomic.AddInt32(&stats.ActiveConnections, -1)
+	stats.ActiveConnections.Add(1)
+	defer stats.ActiveConnections.Add(-1)
 
 	// Запрос конфига
 	if getConfig && configCh != nil {
