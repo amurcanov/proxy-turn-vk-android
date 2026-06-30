@@ -20,9 +20,11 @@ import (
 var CaptchaResultChan = make(chan string, 1)
 
 var captchaModeValue atomic.Value
+var vkAuthModeValue atomic.Value
 
 func init() {
 	captchaModeValue.Store("auto")
+	vkAuthModeValue.Store("vkcalls")
 }
 
 func normalizeCaptchaMode(mode string) string {
@@ -44,6 +46,29 @@ func getCaptchaMode() string {
 	mode, _ := captchaModeValue.Load().(string)
 	if mode == "" {
 		return "auto"
+	}
+	return mode
+}
+
+func normalizeVKAuthMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "legacy":
+		return "legacy"
+	default:
+		return "vkcalls"
+	}
+}
+
+func setVKAuthMode(mode string) string {
+	normalized := normalizeVKAuthMode(mode)
+	vkAuthModeValue.Store(normalized)
+	return normalized
+}
+
+func getVKAuthMode() string {
+	mode, _ := vkAuthModeValue.Load().(string)
+	if mode == "" {
+		return "vkcalls"
 	}
 	return mode
 }
@@ -129,11 +154,13 @@ func main() {
 
 	deviceID := flag.String("device-id", "unknown", "уникальный ID устройства")
 	connPassword := flag.String("password", "", "пароль подключения")
+	vkAuthMode := flag.String("vk-auth-mode", "vkcalls", "режим получения VK TURN-кредов (vkcalls/legacy)")
 	captchaMode := flag.String("captcha-mode", "auto", "режим обхода капчи (auto/wv/rjs)")
 	fingerprint := flag.String("fingerprint", "chrome", "браузерный фингерпринт (chrome, safari, ios, android, firefox)")
 	clientIdsFlag := flag.String("client-ids", "", "ID клиентов VK через запятую")
 
 	flag.Parse()
+	activeVKAuthMode := setVKAuthMode(*vkAuthMode)
 	activeCaptchaMode := setCaptchaMode(*captchaMode)
 
 	if *peerAddr == "" || *vkHash == "" {
@@ -242,6 +269,7 @@ func main() {
 
 	log.Println("[КЛИЕНТ] ═══════════════════════════════════════")
 	log.Printf("[КЛИЕНТ] VK Creds: Client IDs: %s", GetActiveClientIdsString())
+	log.Printf("[КЛИЕНТ] VK Auth: %s", activeVKAuthMode)
 	log.Printf("[КЛИЕНТ] TLS: %s fingerprint", GetActiveFingerprint())
 	log.Printf("[КЛИЕНТ] Воркеров: %d (групп: %d, по %d)", *numW, numGroups, workersPerGroup)
 	log.Printf("[КЛИЕНТ] Хешей: %d", len(hashes))

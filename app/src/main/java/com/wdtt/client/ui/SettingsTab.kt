@@ -112,6 +112,7 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
     var vkHash4 by rememberSaveable { mutableStateOf("") }
     var workersInput by rememberSaveable { mutableFloatStateOf(18f) }
     var showHashesDialog by rememberSaveable { mutableStateOf(false) }
+    var useVKCallsAuth by rememberSaveable { mutableStateOf(true) }
     var autoCaptchaEnabled by rememberSaveable { mutableStateOf(true) }
     var useWVCaptcha by rememberSaveable { mutableStateOf(false) }
     var isManualMode by rememberSaveable { mutableStateOf(true) }
@@ -186,6 +187,7 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
         val serverDtlsPort = settingsStore.serverDtlsPort.first()
         val serverWgPort = settingsStore.serverWgPort.first()
         val sni = settingsStore.sni.first()
+        val vkAuthMode = settingsStore.vkAuthMode.first()
         val captchaMode = settingsStore.captchaMode.first()
         val captchaMethod = settingsStore.captchaSolveMethod.first()
         val wbvCaptchaMethod = settingsStore.captchaWbvSolveMethod.first()
@@ -198,6 +200,7 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
         serverDtlsPortInput = serverDtlsPort.toString()
         serverWgPortInput = serverWgPort.toString()
         sniInput = sni
+        useVKCallsAuth = vkAuthMode != "legacy"
         autoCaptchaEnabled = captchaMode == "auto"
         useWVCaptcha = captchaMode != "rjs"
         wbvManualMode = wbvCaptchaMethod != "auto"
@@ -267,6 +270,7 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
     var pendingStartAfterVpnPermission by remember { mutableStateOf(false) }
 
     fun startTunnelService() {
+        val effectiveVkAuthMode = if (useVKCallsAuth) "vkcalls" else "legacy"
         val effectiveCaptchaMode = if (autoCaptchaEnabled) "auto" else if (useWVCaptcha) "wv" else "rjs"
         val effectiveCaptchaSolveMethod = if (!autoCaptchaEnabled && effectiveCaptchaMode == "wv" && isManualMode) "manual" else "auto"
         saveJob?.cancel()
@@ -275,6 +279,7 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
                 peerInput, combinedHashes, "",
                 workersInput.toInt(), "udp", effectiveLocalPort, sniInput, false
             )
+            settingsStore.saveVkAuthMode(effectiveVkAuthMode)
             settingsStore.saveCaptchaMode(effectiveCaptchaMode)
             settingsStore.saveCaptchaSolveMethod(effectiveCaptchaSolveMethod)
         }
@@ -309,6 +314,7 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
             putExtra("port", finalLocalPort)
             putExtra("sni", sniInput)
             putExtra("connection_password", finalPassword)
+            putExtra("vk_auth_mode", effectiveVkAuthMode)
             putExtra("captcha_mode", effectiveCaptchaMode)
             putExtra("captcha_solve_method", effectiveCaptchaSolveMethod)
             putExtra("fingerprint", activeFingerprint)
@@ -501,127 +507,165 @@ fun SettingsTabContent(context: android.content.Context, scope: kotlinx.coroutin
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                     )
 
-                    // — Авто капча —
+                    // — Режим —
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            if (autoCaptchaEnabled) "Авто капча" else "Ручная капча",
+                            "Режим",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                             modifier = Modifier.weight(1f)
                         )
-                        Switch(
-                            checked = autoCaptchaEnabled,
-                            onCheckedChange = { enabled ->
-                                autoCaptchaEnabled = enabled
-                                scope.launch {
-                                    if (enabled) {
-                                        settingsStore.saveCaptchaMode("auto")
-                                        settingsStore.saveCaptchaSolveMethod("auto")
-                                    } else {
-                                        val mode = if (useWVCaptcha) "wv" else "rjs"
-                                        settingsStore.saveCaptchaMode(mode)
-                                        settingsStore.saveCaptchaSolveMethod(if (mode == "wv" && isManualMode) "manual" else "auto")
-                                    }
-                                }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ProtocolChip("VKCalls", useVKCallsAuth, enabled = !tunnelRunning) {
+                                useVKCallsAuth = true
+                                scope.launch { settingsStore.saveVkAuthMode("vkcalls") }
                             }
-                        )
+                            ProtocolChip("Капча", !useVKCallsAuth, enabled = !tunnelRunning) {
+                                useVKCallsAuth = false
+                                scope.launch { settingsStore.saveVkAuthMode("legacy") }
+                            }
+                        }
                     }
 
                     AnimatedVisibility(
-                        visible = !autoCaptchaEnabled,
+                        visible = !useVKCallsAuth,
                         enter = fadeIn() + expandVertically(),
                         exit = fadeOut() + shrinkVertically()
                     ) {
                         Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
-                            // — Разделитель —
                             HorizontalDivider(
                                 modifier = Modifier.padding(vertical = 4.dp),
                                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                             )
 
-                            // — Метод обхода капчи —
+                            // — Авто капча —
                             Row(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    "Метод обхода капчи",
+                                    if (autoCaptchaEnabled) "Авто капча" else "Ручная капча",
                                     style = MaterialTheme.typography.bodyMedium,
                                     fontWeight = FontWeight.Medium,
                                     modifier = Modifier.weight(1f)
                                 )
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    ProtocolChip("WBV", useWVCaptcha, enabled = true) {
-                                        useWVCaptcha = true
-                                        isManualMode = wbvManualMode
+                                Switch(
+                                    checked = autoCaptchaEnabled,
+                                    enabled = !tunnelRunning,
+                                    onCheckedChange = { enabled ->
+                                        autoCaptchaEnabled = enabled
                                         scope.launch {
-                                            settingsStore.saveCaptchaMode("wv")
-                                            settingsStore.saveCaptchaSolveMethod(if (wbvManualMode) "manual" else "auto")
+                                            if (enabled) {
+                                                settingsStore.saveCaptchaMode("auto")
+                                                settingsStore.saveCaptchaSolveMethod("auto")
+                                            } else {
+                                                val mode = if (useWVCaptcha) "wv" else "rjs"
+                                                settingsStore.saveCaptchaMode(mode)
+                                                settingsStore.saveCaptchaSolveMethod(if (mode == "wv" && isManualMode) "manual" else "auto")
+                                            }
                                         }
                                     }
-                                    ProtocolChip("RJS", !useWVCaptcha, enabled = true, isError = false) {
-                                        useWVCaptcha = false
-                                        isManualMode = false
-                                        scope.launch {
-                                            settingsStore.saveCaptchaMode("rjs")
-                                            settingsStore.saveCaptchaSolveMethod("auto")
-                                        }
-                                    }
-                                }
+                                )
                             }
 
-                            // — Разделитель —
-                            HorizontalDivider(
-                                modifier = Modifier.padding(vertical = 4.dp),
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                            )
-
-                            // — Режим обхода —
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                            AnimatedVisibility(
+                                visible = !autoCaptchaEnabled,
+                                enter = fadeIn() + expandVertically(),
+                                exit = fadeOut() + shrinkVertically()
                             ) {
-                                Text(
-                                    "Режим обхода",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Medium,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    if (useWVCaptcha) {
-                                        ProtocolChip(
-                                            "РУЧ",
-                                            isManualMode,
-                                            enabled = true,
-                                            isError = false
-                                        ) {
-                                            isManualMode = true
-                                            wbvManualMode = true
-                                            scope.launch { settingsStore.saveWbvCaptchaSolveMethod("manual") }
+                                Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                                    // — Разделитель —
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 4.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                    )
+
+                                    // — Метод обхода капчи —
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            "Метод обхода капчи",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            ProtocolChip("WBV", useWVCaptcha, enabled = !tunnelRunning) {
+                                                useWVCaptcha = true
+                                                isManualMode = wbvManualMode
+                                                scope.launch {
+                                                    settingsStore.saveCaptchaMode("wv")
+                                                    settingsStore.saveCaptchaSolveMethod(if (wbvManualMode) "manual" else "auto")
+                                                }
+                                            }
+                                            ProtocolChip("RJS", !useWVCaptcha, enabled = !tunnelRunning, isError = false) {
+                                                useWVCaptcha = false
+                                                isManualMode = false
+                                                scope.launch {
+                                                    settingsStore.saveCaptchaMode("rjs")
+                                                    settingsStore.saveCaptchaSolveMethod("auto")
+                                                }
+                                            }
                                         }
-                                        ProtocolChip(
-                                            "АВТ",
-                                            !isManualMode,
-                                            enabled = true,
-                                            isError = false
-                                        ) {
-                                            isManualMode = false
-                                            wbvManualMode = false
-                                            scope.launch { settingsStore.saveWbvCaptchaSolveMethod("auto") }
+                                    }
+
+                                    // — Разделитель —
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 4.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                                    )
+
+                                    // — Режим обхода —
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            "Режим обхода",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Medium,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            if (useWVCaptcha) {
+                                                ProtocolChip(
+                                                    "РУЧ",
+                                                    isManualMode,
+                                                    enabled = !tunnelRunning,
+                                                    isError = false
+                                                ) {
+                                                    isManualMode = true
+                                                    wbvManualMode = true
+                                                    scope.launch { settingsStore.saveWbvCaptchaSolveMethod("manual") }
+                                                }
+                                                ProtocolChip(
+                                                    "АВТ",
+                                                    !isManualMode,
+                                                    enabled = !tunnelRunning,
+                                                    isError = false
+                                                ) {
+                                                    isManualMode = false
+                                                    wbvManualMode = false
+                                                    scope.launch { settingsStore.saveWbvCaptchaSolveMethod("auto") }
+                                                }
+                                            } else {
+                                                ProtocolChip(
+                                                    "АВТ",
+                                                    selected = true,
+                                                    enabled = false,
+                                                    isError = false
+                                                ) {}
+                                            }
                                         }
-                                    } else {
-                                        ProtocolChip(
-                                            "АВТ",
-                                            selected = true,
-                                            enabled = true,
-                                            isError = false
-                                        ) {}
                                     }
                                 }
                             }

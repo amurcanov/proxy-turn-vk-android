@@ -70,6 +70,7 @@ class SettingsStore(context: Context) {
         private val PROXY_PORT = intPreferencesKey("proxy_port")
 
         // ═══ Captcha Solve Mode ═══
+        private val VK_AUTH_MODE = stringPreferencesKey("vk_auth_mode") // "vkcalls" or "legacy"
         private val CAPTCHA_MODE = stringPreferencesKey("captcha_mode") // "auto", "wv", or "rjs"
         private val CAPTCHA_SOLVE_METHOD = stringPreferencesKey("captcha_solve_method") // "manual" or "auto"
         private val CAPTCHA_WBV_SOLVE_METHOD = stringPreferencesKey("captcha_wbv_solve_method") // "manual" or "auto"
@@ -105,7 +106,7 @@ class SettingsStore(context: Context) {
             val newName = "${baseKey.name}_$profile"
             @Suppress("UNCHECKED_CAST")
             return when (baseKey) {
-                PEER, VK_HASHES, SECONDARY_VK_HASH, PROTOCOL, SNI, USER_AGENT, DEPLOY_IP, DEPLOY_LOGIN, DEPLOY_PASSWORD, DEPLOY_PASSWORD_ENCRYPTED, DEPLOY_SSH_PORT, DEPLOY_DNS1, DEPLOY_DNS2, EXCLUDED_APPS, CONNECTION_PASSWORD, CONNECTION_PASSWORD_ENCRYPTED, DEPLOY_MAIN_PASSWORD, DEPLOY_MAIN_PASSWORD_ENCRYPTED, DEPLOY_ADMIN_ID, DEPLOY_ADMIN_ID_ENCRYPTED, DEPLOY_BOT_TOKEN, DEPLOY_BOT_TOKEN_ENCRYPTED, PROXY_MODE, PROXY_HOST, CAPTCHA_MODE, CAPTCHA_SOLVE_METHOD, CAPTCHA_WBV_SOLVE_METHOD, WDTT_LINK, SELECTED_FINGERPRINT, ACTIVE_CLIENT_IDS -> stringPreferencesKey(newName) as Preferences.Key<T>
+                PEER, VK_HASHES, SECONDARY_VK_HASH, PROTOCOL, SNI, USER_AGENT, DEPLOY_IP, DEPLOY_LOGIN, DEPLOY_PASSWORD, DEPLOY_PASSWORD_ENCRYPTED, DEPLOY_SSH_PORT, DEPLOY_DNS1, DEPLOY_DNS2, EXCLUDED_APPS, CONNECTION_PASSWORD, CONNECTION_PASSWORD_ENCRYPTED, DEPLOY_MAIN_PASSWORD, DEPLOY_MAIN_PASSWORD_ENCRYPTED, DEPLOY_ADMIN_ID, DEPLOY_ADMIN_ID_ENCRYPTED, DEPLOY_BOT_TOKEN, DEPLOY_BOT_TOKEN_ENCRYPTED, PROXY_MODE, PROXY_HOST, VK_AUTH_MODE, CAPTCHA_MODE, CAPTCHA_SOLVE_METHOD, CAPTCHA_WBV_SOLVE_METHOD, WDTT_LINK, SELECTED_FINGERPRINT, ACTIVE_CLIENT_IDS -> stringPreferencesKey(newName) as Preferences.Key<T>
                 WORKERS_PER_HASH, LISTEN_PORT, SERVER_DTLS_PORT, SERVER_WG_PORT, PROXY_PORT -> intPreferencesKey(newName) as Preferences.Key<T>
                 MANUAL_PORTS_ENABLED, NO_DTLS, NO_DNS, IS_WHITELIST, WDTT_LINK_MODE -> booleanPreferencesKey(newName) as Preferences.Key<T>
                 else -> throw IllegalArgumentException("Unsupported key type: ${baseKey.name}")
@@ -247,6 +248,10 @@ class SettingsStore(context: Context) {
     }
 
     // ═══ Captcha Solve Mode ═══
+    val vkAuthMode: Flow<String> = dataStore.data.map { prefs ->
+        val profile = prefs[ACTIVE_PROFILE] ?: 0
+        prefs[getProfileKey(VK_AUTH_MODE, profile)] ?: "vkcalls"
+    }
     val captchaMode: Flow<String> = dataStore.data.map { prefs ->
         val profile = prefs[ACTIVE_PROFILE] ?: 0
         prefs[getProfileKey(CAPTCHA_MODE, profile)] ?: "auto"
@@ -504,6 +509,13 @@ class SettingsStore(context: Context) {
     }
 
     // ═══ Сохранение режима обхода капчи ═══
+    suspend fun saveVkAuthMode(mode: String) {
+        dataStore.edit { prefs ->
+            val profile = prefs[ACTIVE_PROFILE] ?: 0
+            prefs[getProfileKey(VK_AUTH_MODE, profile)] = if (mode == "legacy") "legacy" else "vkcalls"
+        }
+    }
+
     suspend fun saveCaptchaMode(mode: String) {
         dataStore.edit { prefs ->
             val profile = prefs[ACTIVE_PROFILE] ?: 0

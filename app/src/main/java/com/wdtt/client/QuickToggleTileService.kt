@@ -113,6 +113,7 @@ class QuickToggleTileService : TileService() {
                 putExtra("sni", store.sni.first())
                 putExtra("connection_password", store.connectionPassword.first())
                 putExtra("protocol", store.protocol.first())
+                putExtra("vk_auth_mode", store.vkAuthMode.first())
                 putExtra("captcha_mode", store.captchaMode.first())
                 putExtra("captcha_solve_method", store.captchaSolveMethod.first())
                 putExtra("fingerprint", store.selectedFingerprint.first())

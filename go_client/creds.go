@@ -274,11 +274,15 @@ func fetchVkCreds(ctx context.Context, link string, streamID int) (string, strin
 		return "", "", nil, fmt.Errorf("CAPTCHA_WAIT_REQUIRED: global lockout active")
 	}
 
-	if user, pass, addrs, err := getVKCredsViaVKCallsPath(ctx, link, streamID); err == nil {
-		log.Printf("[STREAM %d] [VK Auth] Success via VK Calls path", streamID)
-		return user, pass, addrs, nil
+	if getVKAuthMode() == "vkcalls" {
+		if user, pass, addrs, err := getVKCredsViaVKCallsPath(ctx, link, streamID); err == nil {
+			log.Printf("[STREAM %d] [VK Auth] Success via VK Calls path", streamID)
+			return user, pass, addrs, nil
+		} else {
+			log.Printf("[STREAM %d] [VK Auth] VK Calls path failed (%s), falling back to legacy", streamID, describeVKCallsFailure(err))
+		}
 	} else {
-		log.Printf("[STREAM %d] [VK Auth] VK Calls path failed (%s), falling back to legacy", streamID, describeVKCallsFailure(err))
+		log.Printf("[STREAM %d] [VK Auth] Legacy mode selected, skipping VK Calls path", streamID)
 	}
 
 	var lastErr error
