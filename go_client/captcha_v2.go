@@ -27,8 +27,8 @@ import (
 
 const (
 	captchaV2APIVersion    = "5.131"
-	captchaV2ScriptVersion = "1.1.1324"
-	captchaV2DeviceInfo    = `{"screenWidth":1920,"screenHeight":1080,"screenAvailWidth":1920,"screenAvailHeight":1080,"innerWidth":1920,"innerHeight":951,"devicePixelRatio":1,"language":"en-US","languages":["en-US","en"],"webdriver":false,"hardwareConcurrency":8,"notificationsPermission":"denied"}`
+	captchaV2ScriptVersion = "1.1.1370"
+	captchaV2DeviceInfo    = `{"screenWidth":1920,"screenHeight":1080,"screenAvailWidth":1920,"screenAvailHeight":1040,"innerWidth":1920,"innerHeight":970,"devicePixelRatio":1,"language":"ru-RU","languages":["ru-RU","ru","en-US","en"],"webdriver":false,"hardwareConcurrency":8,"notificationsPermission":"default"}`
 )
 
 var (
@@ -42,7 +42,7 @@ var (
 	errCaptchaV2RateLimit = errors.New("captcha session rate limit reached")
 	errCaptchaV2Bot       = errors.New("captcha bot challenge")
 
-	captchaV2MaxAttempts = 2
+	captchaV2MaxAttempts = 10
 
 	captchaV2DebugCache  sync.Map // scriptURL -> string
 	captchaV2HeaderOrder = []string{
@@ -130,7 +130,7 @@ func solveVkCaptchaV2Attempts(
 		return "", fmt.Errorf("no session_token in redirect_uri")
 	}
 	if maxAttempts < 1 {
-		maxAttempts = 1
+		maxAttempts = 10
 	}
 	log.Printf("[КАПЧА] Решаю VK Smart Captcha автоматически (v2, попыток=%d)...", maxAttempts)
 
@@ -143,7 +143,9 @@ func solveVkCaptchaV2Attempts(
 		}
 		log.Printf("[КАПЧА] v2 попытка %d ошибка: %v", attempt, solveErr)
 		if errors.Is(solveErr, errCaptchaV2RateLimit) {
-			return "", solveErr
+			log.Printf("[КАПЧА] Превышен лимит сессии капчи. Ожидаю 5 секунд...")
+			time.Sleep(5 * time.Second)
+			continue
 		}
 
 		backoffSteps := attempt
@@ -155,7 +157,7 @@ func solveVkCaptchaV2Attempts(
 		case <-ctx.Done():
 			timer.Stop()
 			return "", ctx.Err()
-		case <-timer.C:
+		case <-time.After(time.Duration(1500+mathrand.Intn(1200)) * time.Millisecond):
 		}
 	}
 	return "", fmt.Errorf("v2 captcha attempts exhausted (%d)", maxAttempts)
@@ -470,6 +472,7 @@ func (s *captchaV2Session) solveCheckboxCaptcha(
 }
 
 func solveCaptchaPoWV2(ctx context.Context, input string, difficulty int) string {
+	time.Sleep(time.Duration(200+mathrand.Intn(300)) * time.Millisecond)
 	if input == "" || difficulty <= 0 {
 		return ""
 	}
@@ -591,11 +594,11 @@ func captchaV2StringifyAny(value any) string {
 
 // applyBrowserProfileFhttp applies browser headers to fhttp requests
 func applyBrowserProfileFhttp(req *fhttp.Request, profile Profile) {
-	req.Header.Set("User-Agent", profile.UserAgent)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 	req.Header.Set("sec-ch-ua", profile.SecChUa)
 	req.Header.Set("sec-ch-ua-mobile", profile.SecChUaMobile)
 	req.Header.Set("sec-ch-ua-platform", profile.SecChUaPlatform)
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept-Language", "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7")
 	req.Header.Set("DNT", "1")
 }
 
