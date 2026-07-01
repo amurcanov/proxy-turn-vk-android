@@ -304,12 +304,16 @@ class TunnelService : Service() {
                 }
                 if (TunnelManager.running.value && !isTunnelPaused) {
                     val helper = WireGuardHelper(applicationContext)
-                    if (helper.isTunnelUp()) {
-                        wasEverUp = true
-                    } else if (wasEverUp) {
-                        Log.w("TunnelService", "Обнаружена пропажа или замена VPN-интерфейса! Экстренное выключение туннеля.")
-                        stopTunnel()
-                        break
+                    when (helper.watchdogState()) {
+                        WireGuardHelper.WatchdogState.UP -> wasEverUp = true
+                        WireGuardHelper.WatchdogState.DISABLED_BY_EMPTY_WHITELIST -> Unit
+                        WireGuardHelper.WatchdogState.DOWN -> {
+                            if (wasEverUp) {
+                                Log.w("TunnelService", "Обнаружена пропажа или замена VPN-интерфейса! Экстренное выключение туннеля.")
+                                stopTunnel()
+                                break
+                            }
+                        }
                     }
                 }
                 if (!isTunnelPaused) {

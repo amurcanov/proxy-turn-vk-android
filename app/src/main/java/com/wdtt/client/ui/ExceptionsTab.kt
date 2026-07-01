@@ -60,6 +60,7 @@ fun ExceptionsTab() {
 
     var appsList by remember { mutableStateOf<List<AppItem>>(AppCache.cachedList ?: emptyList()) }
     var isLoading by remember { mutableStateOf(AppCache.cachedList == null) }
+    var isMigrationReady by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
 
     val showSystemAppsOpt by settingsStore.showSystemApps.collectAsStateWithLifecycle(initialValue = null)
@@ -68,6 +69,11 @@ fun ExceptionsTab() {
 
     // Load Apps
     LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) {
+            settingsStore.migrateLegacyWhitelistMode()
+        }
+        isMigrationReady = true
+
         if (AppCache.cachedList != null) return@LaunchedEffect
         isLoading = true
         withContext(Dispatchers.IO) {
@@ -155,7 +161,7 @@ fun ExceptionsTab() {
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        if (isWhitelist) "БС: Неотмеченные приложения добавляются в туннель"
+                        if (isWhitelist) "БС: Выбранные приложения добавляются в туннель"
                         else "ЧС: Выбранные приложения исключаются из туннеля",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -164,23 +170,19 @@ fun ExceptionsTab() {
                     )
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ModeChip("ЧС", !isWhitelist) {
+                    ModeChip("ЧС", !isWhitelist, enabled = isMigrationReady) {
                         if (isWhitelist) {
                             scope.launch {
-                                val all = appsList.map { it.packageName }.toSet()
-                                val inverted = all - selectedPackages
-                                settingsStore.saveExceptionsMode(inverted.joinToString(","), false)
+                                settingsStore.saveExceptionsMode("", false)
                                 delay(300)
                                 com.wdtt.client.TunnelManager.reloadWireGuard()
                             }
                         }
                     }
-                    ModeChip("БС", isWhitelist) {
+                    ModeChip("БС", isWhitelist, enabled = isMigrationReady) {
                         if (!isWhitelist) {
                             scope.launch {
-                                val all = appsList.map { it.packageName }.toSet()
-                                val inverted = all - selectedPackages
-                                settingsStore.saveExceptionsMode(inverted.joinToString(","), true)
+                                settingsStore.saveExceptionsMode("", true)
                                 delay(300)
                                 com.wdtt.client.TunnelManager.reloadWireGuard()
                             }
@@ -218,7 +220,7 @@ fun ExceptionsTab() {
         }
 
         // List
-        if (isLoading || showSystemAppsOpt == null) {
+        if (!isMigrationReady || isLoading || showSystemAppsOpt == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 CircularProgressIndicator()
             }
@@ -255,10 +257,11 @@ fun ExceptionsTab() {
 }
 
 @Composable
-private fun ModeChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun ModeChip(label: String, selected: Boolean, enabled: Boolean = true, onClick: () -> Unit) {
     FilterChip(
         selected = selected,
         onClick = onClick,
+        enabled = enabled,
         label = {
             Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Text(

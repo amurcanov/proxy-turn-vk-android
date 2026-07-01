@@ -1,6 +1,8 @@
 package com.wdtt.client
 
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -13,10 +15,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-
-import android.os.Build
 
 class SettingsStore(context: Context) {
     private val appContext = context.applicationContext
@@ -77,6 +78,7 @@ class SettingsStore(context: Context) {
         
         // ═══ VPN Exclusions Mode ═══
         private val IS_WHITELIST = booleanPreferencesKey("is_whitelist")
+        private val SPLIT_TUNNEL_WHITELIST_MIGRATED = booleanPreferencesKey("split_tunnel_whitelist_migrated")
 
         // ═══ Theme Mode ═══
         private val THEME_MODE = stringPreferencesKey("theme_mode") // "system", "light", "dark"
@@ -120,6 +122,7 @@ class SettingsStore(context: Context) {
     init {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             migrateSecretsToKeystore()
+            migrateLegacyWhitelistMode()
         }
     }
 
@@ -469,6 +472,7 @@ class SettingsStore(context: Context) {
         dataStore.edit { prefs ->
             val profile = prefs[ACTIVE_PROFILE] ?: 0
             prefs[getProfileKey(EXCLUDED_APPS, profile)] = packages
+            prefs[SPLIT_TUNNEL_WHITELIST_MIGRATED] = true
         }
     }
     
@@ -545,6 +549,7 @@ class SettingsStore(context: Context) {
         dataStore.edit { prefs ->
             val profile = prefs[ACTIVE_PROFILE] ?: 0
             prefs[getProfileKey(IS_WHITELIST, profile)] = enabled
+            prefs[SPLIT_TUNNEL_WHITELIST_MIGRATED] = true
         }
     }
 
@@ -554,6 +559,7 @@ class SettingsStore(context: Context) {
             val profile = prefs[ACTIVE_PROFILE] ?: 0
             prefs[getProfileKey(EXCLUDED_APPS, profile)] = packages
             prefs[getProfileKey(IS_WHITELIST, profile)] = isWhitelist
+            prefs[SPLIT_TUNNEL_WHITELIST_MIGRATED] = true
         }
     }
 
@@ -567,6 +573,48 @@ class SettingsStore(context: Context) {
                 prefs.migrateSecret(getProfileKey(DEPLOY_BOT_TOKEN_ENCRYPTED, profile), getProfileKey(DEPLOY_BOT_TOKEN, profile))
             }
         }
+    }
+
+    suspend fun migrateLegacyWhitelistMode() {
+        val currentPrefs = dataStore.data.first()
+        if (currentPrefs[SPLIT_TUNNEL_WHITELIST_MIGRATED] == true) return
+
+        val hasLegacyWhitelist = (0..2).any { profile ->
+            currentPrefs[getProfileKey(IS_WHITELIST, profile)] == true
+        }
+        val installedApps = if (hasLegacyWhitelist) installedSplitTunnelPackages() else emptySet()
+        dataStore.edit { prefs ->
+            if (prefs[SPLIT_TUNNEL_WHITELIST_MIGRATED] == true) return@edit
+
+            for (profile in 0..2) {
+                val whitelistKey = getProfileKey(IS_WHITELIST, profile)
+                val appsKey = getProfileKey(EXCLUDED_APPS, profile)
+                if (prefs[whitelistKey] == true) {
+                    val legacyExcluded = prefs[appsKey]
+                        ?.split(",")
+                        ?.filter { it.isNotEmpty() }
+                        ?.toSet()
+                        ?: emptySet()
+                    prefs[appsKey] = (installedApps - legacyExcluded).sorted().joinToString(",")
+                }
+            }
+
+            prefs[SPLIT_TUNNEL_WHITELIST_MIGRATED] = true
+        }
+    }
+
+    private fun installedSplitTunnelPackages(): Set<String> {
+        return runCatching {
+            appContext.packageManager
+                .getInstalledApplications(PackageManager.GET_META_DATA)
+                .map { it.packageName }
+                .filter {
+                    it != appContext.packageName &&
+                        !it.contains("vkontakte") &&
+                        !it.contains("vk.calls")
+                }
+                .toSet()
+        }.getOrDefault(emptySet())
     }
 
     private fun readSecret(
