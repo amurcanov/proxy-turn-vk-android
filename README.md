@@ -24,7 +24,7 @@
 **WDTT** — это Android-приложение для создания защищённого **WireGuard-туннеля поверх TURN/DTLS**. Клиент поднимает локальный VPN-интерфейс на устройстве, получает WireGuard-конфигурацию от вашего VPS и передаёт транспорт через TURN-серверы VK, маскируя соединение под обычный зашифрованный медиатрафик звонка.
 
 **Кросс., проекты с поддержкой WDTT**: 
-- Windows & Linux & MacOS порт - [luminescq/focsq](https://github.com/luminescq/PWDTT)
+- Windows & Linux & MacOS порт - [luminescq/pwdtt](https://github.com/luminescq/PWDTT)
 - IOS совместимый клиент - [anton48/vk-turn-proxy-ios](https://github.com/anton48/vk-turn-proxy-ios)
 
 > [!WARNING]
